@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>台灣展覽查詢</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+
+  <header class="bg-white border-b border-slate-200">
+    <div class="max-w-6xl mx-auto px-4 py-5">
+      <h1 class="text-2xl font-bold">台灣展覽查詢</h1>
+      <p class="text-sm text-slate-500 mt-1">資料來源：文化部文化資料開放服務網（每日更新的靜態資料，非即時查詢）</p>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 py-6">
+
+    <!-- 篩選區 -->
+    <section class="bg-white border border-slate-200 rounded-lg p-4 mb-6 flex flex-wrap gap-4 items-end">
+      <div>
+        <label for="county-select" class="block text-sm font-medium text-slate-700 mb-1">縣市</label>
+        <select id="county-select"
+          class="border border-slate-300 rounded-md px-3 py-2 text-sm min-w-[10rem] focus:outline-none focus:ring-2 focus:ring-slate-400">
+          <option value="">不限縣市</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="date-mode-select" class="block text-sm font-medium text-slate-700 mb-1">時間</label>
+        <select id="date-mode-select"
+          class="border border-slate-300 rounded-md px-3 py-2 text-sm min-w-[8rem] focus:outline-none focus:ring-2 focus:ring-slate-400">
+          <option value="">不限時間</option>
+          <option value="today">今天</option>
+          <option value="week">本週</option>
+          <option value="month">本月</option>
+          <option value="custom">自訂區間</option>
+        </select>
+      </div>
+
+      <div id="custom-date-fields" class="hidden flex gap-2 items-end">
+        <div>
+          <label for="custom-start" class="block text-sm font-medium text-slate-700 mb-1">開始日期</label>
+          <input id="custom-start" type="date"
+            class="border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+        </div>
+        <div>
+          <label for="custom-end" class="block text-sm font-medium text-slate-700 mb-1">結束日期</label>
+          <input id="custom-end" type="date"
+            class="border border-slate-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-400" />
+        </div>
+      </div>
+
+      <div class="ml-auto text-sm text-slate-500 self-end pb-2">
+        <span id="result-count"></span>
+      </div>
+    </section>
+
+    <!-- 狀態訊息 -->
+    <div id="status-message" class="text-slate-500 text-sm mb-4"></div>
+
+    <!-- 卡片列表 -->
+    <section id="card-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5"></section>
+
+  </main>
+
+  <script>
+    // 無圖片時的預設佔位圖（inline SVG data URI，見 schema.md 4-12：imageUrl 有 94.8% 是空字串）
+    const PLACEHOLDER_IMAGE =
+      "data:image/svg+xml;utf8," +
+      encodeURIComponent(`
+        <svg xmlns="http://www.w3.org/2000/svg" width="400" height="300" viewBox="0 0 400 300">
+          <rect width="400" height="300" fill="#e2e8f0"/>
+          <g fill="#94a3b8">
+            <rect x="150" y="110" width="100" height="70" rx="4" fill="none" stroke="#94a3b8" stroke-width="4"/>
+            <circle cx="175" cy="135" r="8"/>
+            <path d="M150 170 L185 145 L210 165 L230 145 L250 170 Z"/>
+          </g>
+          <text x="200" y="215" font-family="sans-serif" font-size="14" fill="#94a3b8" text-anchor="middle">無圖片</text>
+        </svg>
+      `);
+
+    let events = [];
+
+    // "YYYY/MM/DD" -> Date（本地時區午夜）
+    function parseDate(s) {
+      const [y, m, d] = s.split("/").map(Number);
+      return new Date(y, m - 1, d);
+    }
+
+    function startOfDay(d) {
+      const r = new Date(d);
+      r.setHours(0, 0, 0, 0);
+      return r;
+    }
+
+    // 依選擇的時間模式算出查詢區間 [start, end]（皆為當天 00:00），"" 代表不限時間
+    function getDateRange(mode, customStartStr, customEndStr) {
+      const today = startOfDay(new Date());
+
+      if (mode === "today") {
+        return [today, today];
+      }
+      if (mode === "week") {
+        const dow = today.getDay(); // 0=週日 ... 6=週六
+        const diffToMonday = dow === 0 ? -6 : 1 - dow;
+        const monday = new Date(today);
+        monday.setDate(today.getDate() + diffToMonday);
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        return [monday, sunday];
+      }
+      if (mode === "month") {
+        const first = new Date(today.getFullYear(), today.getMonth(), 1);
+        const last = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        return [first, last];
+      }
+      if (mode === "custom") {
+        if (!customStartStr || !customEndStr) return null;
+        return [startOfDay(new Date(customStartStr)), startOfDay(new Date(customEndStr))];
+      }
+      return null; // 不限時間
+    }
+
+    // 活動符合 = (startDate <= 查詢結束日) AND (endDate >= 查詢開始日)（見 schema.md 第 6 節）
+    function matchesDateRange(event, range) {
+      if (!range) return true;
+      const [queryStart, queryEnd] = range;
+      const eventStart = parseDate(event.startDate);
+      const eventEnd = parseDate(event.endDate);
+      return eventStart <= queryEnd && eventEnd >= queryStart;
+    }
+
+    // 縣市篩選在場次（showInfo）層級判斷「任一場次符合」（見 schema.md 第 3 節）
+    function matchesCounty(event, county) {
+      if (!county) return true;
+      return event.showInfo.some((s) => s.county === county);
+    }
+
+    function populateCountyDropdown() {
+      const counties = [
+        ...new Set(events.flatMap((e) => e.showInfo.map((s) => s.county).filter(Boolean))),
+      ].sort((a, b) => a.localeCompare(b, "zh-Hant"));
+
+      const select = document.getElementById("county-select");
+      for (const county of counties) {
+        const opt = document.createElement("option");
+        opt.value = county;
+        opt.textContent = county;
+        select.appendChild(opt);
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement("div");
+      div.textContent = str ?? "";
+      return div.innerHTML;
+    }
+
+    function renderCard(event) {
+      const imageSrc = event.imageUrl ?? PLACEHOLDER_IMAGE;
+      const locations = event.showInfo
+        .map((s) => `${escapeHtml(s.locationName)}（${escapeHtml(s.county ?? "地點未知")}）`)
+        .join("、");
+
+      return `
+        <article class="bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col">
+          <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(event.title)}"
+               class="w-full h-44 object-cover bg-slate-100"
+               onerror="this.onerror=null;this.src='${PLACEHOLDER_IMAGE}';" />
+          <div class="p-4 flex flex-col gap-2 flex-1">
+            <h2 class="font-semibold leading-snug">${escapeHtml(event.title)}</h2>
+            <p class="text-sm text-slate-500">${escapeHtml(event.startDate)} ～ ${escapeHtml(event.endDate)}</p>
+            <p class="text-sm text-slate-600">📍 ${locations || "地點未知"}</p>
+            ${event.description ? `<p class="text-sm text-slate-600 line-clamp-3">${escapeHtml(event.description)}</p>` : ""}
+            ${event.showUnit ? `<p class="text-xs text-slate-400 mt-auto pt-2">主辦：${escapeHtml(event.showUnit)}</p>` : ""}
+          </div>
+        </article>
+      `;
+    }
+
+    function render() {
+      const county = document.getElementById("county-select").value;
+      const dateMode = document.getElementById("date-mode-select").value;
+      const customStart = document.getElementById("custom-start").value;
+      const customEnd = document.getElementById("custom-end").value;
+
+      document.getElementById("custom-date-fields").classList.toggle("hidden", dateMode !== "custom");
+
+      const statusEl = document.getElementById("status-message");
+      if (dateMode === "custom" && (!customStart || !customEnd)) {
+        statusEl.textContent = "請選擇自訂區間的開始與結束日期。";
+        document.getElementById("card-list").innerHTML = "";
+        document.getElementById("result-count").textContent = "";
+        return;
+      }
+      statusEl.textContent = "";
+
+      const range = getDateRange(dateMode, customStart, customEnd);
+      const filtered = events.filter(
+        (e) => matchesCounty(e, county) && matchesDateRange(e, range)
+      );
+
+      document.getElementById("result-count").textContent = `共 ${filtered.length} 筆`;
+      document.getElementById("card-list").innerHTML = filtered.map(renderCard).join("");
+    }
+
+    async function init() {
+      const statusEl = document.getElementById("status-message");
+      statusEl.textContent = "載入中…";
+      try {
+        const res = await fetch("events.json");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        events = await res.json();
+      } catch (err) {
+        statusEl.textContent = "資料載入失敗，請確認 events.json 是否存在於同一目錄下。";
+        console.error(err);
+        return;
+      }
+      statusEl.textContent = "";
+
+      populateCountyDropdown();
+
+      document.getElementById("county-select").addEventListener("change", render);
+      document.getElementById("date-mode-select").addEventListener("change", render);
+      document.getElementById("custom-start").addEventListener("change", render);
+      document.getElementById("custom-end").addEventListener("change", render);
+
+      render();
+    }
+
+    init();
+  </script>
+
+</body>
+</html>
