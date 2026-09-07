@@ -52,6 +52,12 @@
         </div>
       </div>
 
+      <div class="flex items-center gap-2 self-end pb-2">
+        <input id="include-permanent" type="checkbox"
+          class="rounded border-slate-300 focus:ring-2 focus:ring-slate-400" />
+        <label for="include-permanent" class="text-sm text-slate-700">包含常設展</label>
+      </div>
+
       <div class="ml-auto text-sm text-slate-500 self-end pb-2">
         <span id="result-count"></span>
       </div>
@@ -138,6 +144,14 @@
       return event.showInfo.some((s) => s.county === county);
     }
 
+    const DATE_MODE_LABEL = {
+      "": "全部",
+      today: "今天",
+      week: "本週",
+      month: "本月",
+      custom: "自訂區間",
+    };
+
     function populateCountyDropdown() {
       const counties = [
         ...new Set(events.flatMap((e) => e.showInfo.map((s) => s.county).filter(Boolean))),
@@ -185,6 +199,7 @@
       const dateMode = document.getElementById("date-mode-select").value;
       const customStart = document.getElementById("custom-start").value;
       const customEnd = document.getElementById("custom-end").value;
+      const includePermanent = document.getElementById("include-permanent").checked;
 
       document.getElementById("custom-date-fields").classList.toggle("hidden", dateMode !== "custom");
 
@@ -198,12 +213,20 @@
       statusEl.textContent = "";
 
       const range = getDateRange(dateMode, customStart, customEnd);
-      const filtered = events.filter(
-        (e) => matchesCounty(e, county) && matchesDateRange(e, range)
-      );
+      // 先套用縣市＋時間篩選（跟常設展與否無關），再依「包含常設展」決定要不要
+      // 把其中的常設展也列進來——這樣才能同時算出「顯示中」跟「被藏起來」的筆數。
+      const matched = events.filter((e) => matchesCounty(e, county) && matchesDateRange(e, range));
+      const nonPermanent = matched.filter((e) => !e.isPermanent);
+      const permanentCount = matched.length - nonPermanent.length;
+      const displayed = includePermanent ? matched : nonPermanent;
 
-      document.getElementById("result-count").textContent = `共 ${filtered.length} 筆`;
-      document.getElementById("card-list").innerHTML = filtered.map(renderCard).join("");
+      const label = DATE_MODE_LABEL[dateMode];
+      let countText = `${label} ${displayed.length} 檔展覽`;
+      if (!includePermanent && permanentCount > 0) {
+        countText += `（另有 ${permanentCount} 檔常設展）`;
+      }
+      document.getElementById("result-count").textContent = countText;
+      document.getElementById("card-list").innerHTML = displayed.map(renderCard).join("");
     }
 
     async function init() {
@@ -226,6 +249,7 @@
       document.getElementById("date-mode-select").addEventListener("change", render);
       document.getElementById("custom-start").addEventListener("change", render);
       document.getElementById("custom-end").addEventListener("change", render);
+      document.getElementById("include-permanent").addEventListener("change", render);
 
       render();
     }
