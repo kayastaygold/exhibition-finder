@@ -38,7 +38,11 @@ const COUNTIES = [
   "金門縣",
   "連江縣",
 ];
-const COUNTY_PATTERN = new RegExp(`(${COUNTIES.join("|")})`);
+// 縣市、行政區都要用同一個「最後一次出現的縣市位置」當基準去抽——樣本裡有
+// 「臺中市40453 臺中市北區館前路一號」這種縣市名重複、中間夾著郵遞區號的寫法
+// （見 schema.md 4-6），只有取最後一次出現的位置，才能正確跳過郵遞區號、
+// 落在真正的縣市名之後去找行政區。用 "g" 旗標才能配合 matchAll 找出全部出現位置。
+const COUNTY_PATTERN = new RegExp(`(${COUNTIES.join("|")})`, "g");
 
 // 正體/俗體字同一縣市的顯示名稱一律正規化成正體（例如「台北市」→「臺北市」），
 // 避免下拉選單裡出現同一縣市兩種寫法。
@@ -49,12 +53,40 @@ const COUNTY_CANONICAL = {
   "台東縣": "臺東縣",
 };
 
-function extractCounty(location) {
+// 行政區（鄉/鎮/市/區）緊接在縣市名稱之後。用「非貪婪」比對，抽到第一個
+// 鄉/鎮/市/區字尾就停——如果貪婪比對，像「花蓮縣壽豐鄉市場1號」的行政區會被
+// 誤判成「壽豐鄉市」（把「市場」的「市」也吃進去），非貪婪才會正確停在「壽豐鄉」。
+// （這個陷阱是實際用 sample.json 驗證時抓到的，見 schema.md 4-14）
+const DISTRICT_PATTERN = /^([一-鿿]{1,6}?[鄉鎮市區])/;
+
+// 找 location 字串裡「最後一次」出現的縣市名稱，回傳含比對位置的 match 物件或 null。
+function findLastCountyMatch(location) {
   if (!location) return null;
-  const m = COUNTY_PATTERN.exec(location);
+  let last = null;
+  for (const m of location.matchAll(COUNTY_PATTERN)) {
+    last = m;
+  }
+  return last;
+}
+
+function extractCounty(location) {
+  const m = findLastCountyMatch(location);
   if (!m) return null;
-  const raw = m[1];
-  return COUNTY_CANONICAL[raw] ?? raw;
+  return COUNTY_CANONICAL[m[1]] ?? m[1];
+}
+
+// 行政區在「最後一次出現的縣市名稱」之後緊接的文字裡找。找不到縣市時
+// （見 schema.md 4-6：4.4% 的地址完全沒有縣市前綴），退而求其次直接對整個
+// location 字串比對——樣本裡有 13 筆地址是「中正區羅斯福路...」這種直接以
+// 行政區開頭、沒有縣市前綴的寫法，一樣抽得出行政區，只是沒有對應的縣市。
+function extractDistrict(location) {
+  if (!location) return null;
+  const countyMatch = findLastCountyMatch(location);
+  const remainder = countyMatch
+    ? location.slice(countyMatch.index + countyMatch[0].length)
+    : location;
+  const m = DISTRICT_PATTERN.exec(remainder);
+  return m ? m[1] : null;
 }
 
 // latitude/longitude 在來源資料裡是字串或 JSON null（見 schema.md 4-3）。
@@ -129,6 +161,7 @@ function buildEvent(raw) {
     location: s.location ?? "",
     locationName: s.locationName ?? "",
     county: extractCounty(s.location),
+    district: extractDistrict(s.location),
     latitude: normalizeCoord(s.latitude, -90, 90),
     longitude: normalizeCoord(s.longitude, -180, 180),
     time: s.time ?? "",
