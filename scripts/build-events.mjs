@@ -143,6 +143,21 @@ function isPermanentExhibition({ title, startDate, endDate }) {
   return titleHasKeyword || looksLikeYearPlaceholder || isVeryLongRunning;
 }
 
+// 判斷一筆活動是否為「線上展」（純線上平台展出，沒有實體場地可去）。
+// 來源資料仍會把線上展掛在某個縣市底下（見 issue #2），對地點篩選是雜訊。
+//
+// 只比對**標題**，不比對簡介——驗證時發現比對簡介會誤判：「量水器室特展」的
+// 簡介提到「文資網線上特展」，但那其實是一檔首度開放現場參觀的實體特展，線上
+// 只是附加的導覽形式，不該被歸類成線上展。標題比對在樣本裡沒有這個問題。
+//
+// 關鍵字「雲端」限定要接「展/策展/平台」才算數（`雲端(展|策展|平台)`），不能
+// 裸比對「雲端」兩個字——「雲端上的白鷹－熊鷹特展」標題有「雲端」，但那是一檔
+// 在遊客中心展出標本、3D 列印模型的實體特展，「雲端」在這裡是「翱翔雲端」的
+// 字面意思，跟「雲端平台」無關，裸比對會誤判。
+function isOnlineExhibition({ title }) {
+  return /線上|virtual|雲端(展|策展|平台)/i.test(title ?? "");
+}
+
 // descriptionFilterHtml 樣本中沒有 HTML 標籤（見 schema.md 4-5），但仍用簡單的
 // tag-strip 防呆，避免未來資料混入標籤時原封不動塞進畫面。取前 100 字當卡片摘要。
 function shortDescription(html) {
@@ -179,6 +194,7 @@ function buildEvent(raw) {
     description: shortDescription(raw.descriptionFilterHtml),
     showUnit: raw.showUnit ?? "",
     isPermanent: isPermanentExhibition(raw),
+    isOnline: isOnlineExhibition(raw),
     // showInfo 保留成陣列 — 一個展覽可能對應多個場次/地點（巡迴展），
     // 即使本次樣本每筆都恰好長度 1，資料模型仍不能寫死成單一地點。
     // 見 schema.md 第 3 節。
