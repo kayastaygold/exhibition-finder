@@ -28,6 +28,14 @@
       </div>
 
       <div>
+        <label for="district-select" class="block text-sm font-medium text-slate-700 mb-1">行政區</label>
+        <select id="district-select" disabled
+          class="border border-slate-300 rounded-md px-3 py-2 text-sm min-w-[8rem] focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:bg-slate-100 disabled:text-slate-400">
+          <option value="">不限行政區</option>
+        </select>
+      </div>
+
+      <div>
         <label for="date-mode-select" class="block text-sm font-medium text-slate-700 mb-1">時間</label>
         <select id="date-mode-select"
           class="border border-slate-300 rounded-md px-3 py-2 text-sm min-w-[8rem] focus:outline-none focus:ring-2 focus:ring-slate-400">
@@ -138,10 +146,16 @@
       return eventStart <= queryEnd && eventEnd >= queryStart;
     }
 
-    // 縣市篩選在場次（showInfo）層級判斷「任一場次符合」（見 schema.md 第 3 節）
-    function matchesCounty(event, county) {
-      if (!county) return true;
-      return event.showInfo.some((s) => s.county === county);
+    // 縣市／行政區篩選在場次（showInfo）層級判斷「任一場次符合」（見 schema.md 第 3 節）。
+    // 縣市跟行政區要求同一個場次同時符合，不是分別在不同場次上各自符合——
+    // 不然像「東區」這種在多個縣市都有的行政區名稱，會誤配到別的縣市去。
+    function matchesLocation(event, county, district) {
+      if (!county && !district) return true;
+      return event.showInfo.some((s) => {
+        if (county && s.county !== county) return false;
+        if (district && s.district !== district) return false;
+        return true;
+      });
     }
 
     const DATE_MODE_LABEL = {
@@ -166,17 +180,62 @@
       }
     }
 
+    // 行政區下拉選單串聯在縣市之下：沒選縣市時停用、只留「不限行政區」，
+    // 選了縣市後才列出該縣市底下實際出現過的行政區。行政區名稱在不同縣市會
+    // 重複（例如「東區」臺中、臺南、新竹市都有），所以刻意不做成扁平選單。
+    function populateDistrictDropdown(county) {
+      const select = document.getElementById("district-select");
+      select.innerHTML = '<option value="">不限行政區</option>';
+
+      if (!county) {
+        select.disabled = true;
+        return;
+      }
+      select.disabled = false;
+
+      const districts = [
+        ...new Set(
+          events
+            .flatMap((e) => e.showInfo.filter((s) => s.county === county).map((s) => s.district))
+            .filter(Boolean)
+        ),
+      ].sort((a, b) => a.localeCompare(b, "zh-Hant"));
+
+      for (const district of districts) {
+        const opt = document.createElement("option");
+        opt.value = district;
+        opt.textContent = district;
+        select.appendChild(opt);
+      }
+    }
+
     function escapeHtml(str) {
       const div = document.createElement("div");
       div.textContent = str ?? "";
       return div.innerHTML;
     }
 
-    function renderCard(event) {
+    // filter = { county, district }：目前的地點篩選條件，用來標示 event.showInfo
+    // 裡「哪一場」是符合篩選才讓這張卡片被篩出來的。一檔展覽可能有多個場次分屬
+    // 不同縣市/行政區（見 schema.md 第 3 節），不篩掉不符合的場次、只是淡化顯示，
+    // 這樣使用者還是看得到展覽的其他場次資訊。
+    function renderCard(event, filter) {
       const imageSrc = event.imageUrl ?? PLACEHOLDER_IMAGE;
-      const locations = event.showInfo
-        .map((s) => `${escapeHtml(s.locationName)}（${escapeHtml(s.county ?? "地點未知")}）`)
-        .join("、");
+      const hasLocationFilter = Boolean(filter.county || filter.district);
+
+      const locationItems = event.showInfo
+        .map((s) => {
+          const isMatch =
+            (!filter.county || s.county === filter.county) &&
+            (!filter.district || s.district === filter.district);
+          const place = `${escapeHtml(s.locationName)}（${escapeHtml(s.county ?? "縣市未知")}${
+            s.district ? escapeHtml(s.district) : ""
+          }）`;
+          const dimmed = hasLocationFilter && !isMatch;
+          const marker = hasLocationFilter && isMatch ? "✓ " : "";
+          return `<li class="${dimmed ? "text-slate-400" : "text-slate-600"}">📍 ${marker}${place}</li>`;
+        })
+        .join("");
 
       return `
         <article class="bg-white border border-slate-200 rounded-lg overflow-hidden flex flex-col">
@@ -186,7 +245,7 @@
           <div class="p-4 flex flex-col gap-2 flex-1">
             <h2 class="font-semibold leading-snug">${escapeHtml(event.title)}</h2>
             <p class="text-sm text-slate-500">${escapeHtml(event.startDate)} ～ ${escapeHtml(event.endDate)}</p>
-            <p class="text-sm text-slate-600">📍 ${locations || "地點未知"}</p>
+            <ul class="text-sm space-y-0.5">${locationItems || '<li class="text-slate-600">📍 地點未知</li>'}</ul>
             ${event.description ? `<p class="text-sm text-slate-600 line-clamp-3">${escapeHtml(event.description)}</p>` : ""}
             ${event.showUnit ? `<p class="text-xs text-slate-400 mt-auto pt-2">主辦：${escapeHtml(event.showUnit)}</p>` : ""}
           </div>
@@ -196,6 +255,7 @@
 
     function render() {
       const county = document.getElementById("county-select").value;
+      const district = document.getElementById("district-select").value;
       const dateMode = document.getElementById("date-mode-select").value;
       const customStart = document.getElementById("custom-start").value;
       const customEnd = document.getElementById("custom-end").value;
@@ -213,9 +273,12 @@
       statusEl.textContent = "";
 
       const range = getDateRange(dateMode, customStart, customEnd);
-      // 先套用縣市＋時間篩選（跟常設展與否無關），再依「包含常設展」決定要不要
-      // 把其中的常設展也列進來——這樣才能同時算出「顯示中」跟「被藏起來」的筆數。
-      const matched = events.filter((e) => matchesCounty(e, county) && matchesDateRange(e, range));
+      // 先套用縣市＋行政區＋時間篩選（跟常設展與否無關），再依「包含常設展」
+      // 決定要不要把其中的常設展也列進來——這樣才能同時算出「顯示中」跟
+      // 「被藏起來」的筆數。
+      const matched = events.filter(
+        (e) => matchesLocation(e, county, district) && matchesDateRange(e, range)
+      );
       const nonPermanent = matched.filter((e) => !e.isPermanent);
       const permanentCount = matched.length - nonPermanent.length;
       const displayed = includePermanent ? matched : nonPermanent;
@@ -226,7 +289,9 @@
         countText += `（另有 ${permanentCount} 檔常設展）`;
       }
       document.getElementById("result-count").textContent = countText;
-      document.getElementById("card-list").innerHTML = displayed.map(renderCard).join("");
+      document.getElementById("card-list").innerHTML = displayed
+        .map((e) => renderCard(e, { county, district }))
+        .join("");
     }
 
     async function init() {
@@ -244,8 +309,15 @@
       statusEl.textContent = "";
 
       populateCountyDropdown();
+      populateDistrictDropdown("");
 
-      document.getElementById("county-select").addEventListener("change", render);
+      document.getElementById("county-select").addEventListener("change", (ev) => {
+        // 換縣市時，行政區選單要重新依新縣市列出選項，並把選擇重置成「不限行政區」
+        // ——不然可能留著一個不屬於新縣市的行政區選項。
+        populateDistrictDropdown(ev.target.value);
+        render();
+      });
+      document.getElementById("district-select").addEventListener("change", render);
       document.getElementById("date-mode-select").addEventListener("change", render);
       document.getElementById("custom-start").addEventListener("change", render);
       document.getElementById("custom-end").addEventListener("change", render);
