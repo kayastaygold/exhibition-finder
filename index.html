@@ -66,6 +66,12 @@
         <label for="include-permanent" class="text-sm text-slate-700">包含常設展</label>
       </div>
 
+      <div class="flex items-center gap-2 self-end pb-2">
+        <input id="include-online" type="checkbox"
+          class="rounded border-slate-300 focus:ring-2 focus:ring-slate-400" />
+        <label for="include-online" class="text-sm text-slate-700">包含線上展覽</label>
+      </div>
+
       <div class="ml-auto text-sm text-slate-500 self-end pb-2">
         <span id="result-count"></span>
       </div>
@@ -260,6 +266,7 @@
       const customStart = document.getElementById("custom-start").value;
       const customEnd = document.getElementById("custom-end").value;
       const includePermanent = document.getElementById("include-permanent").checked;
+      const includeOnline = document.getElementById("include-online").checked;
 
       document.getElementById("custom-date-fields").classList.toggle("hidden", dateMode !== "custom");
 
@@ -273,20 +280,28 @@
       statusEl.textContent = "";
 
       const range = getDateRange(dateMode, customStart, customEnd);
-      // 先套用縣市＋行政區＋時間篩選（跟常設展與否無關），再依「包含常設展」
-      // 決定要不要把其中的常設展也列進來——這樣才能同時算出「顯示中」跟
-      // 「被藏起來」的筆數。
+      // 先套用縣市＋行政區＋時間篩選（跟常設展/線上展與否無關），再依「包含常設展」
+      // 「包含線上展覽」決定要不要把它們也列進來——這樣才能同時算出「顯示中」跟
+      // 「被藏起來」的筆數。常設展跟線上展覽是各自獨立算的，不是互斥分類：
+      // 一檔展覽可能同時符合兩者（例如常設的線上展），會同時被算進兩個隱藏數字裡。
       const matched = events.filter(
         (e) => matchesLocation(e, county, district) && matchesDateRange(e, range)
       );
-      const nonPermanent = matched.filter((e) => !e.isPermanent);
-      const permanentCount = matched.length - nonPermanent.length;
-      const displayed = includePermanent ? matched : nonPermanent;
+      const displayed = matched.filter(
+        (e) => (includePermanent || !e.isPermanent) && (includeOnline || !e.isOnline)
+      );
+      const permanentCount = includePermanent
+        ? 0
+        : matched.filter((e) => e.isPermanent).length;
+      const onlineCount = includeOnline ? 0 : matched.filter((e) => e.isOnline).length;
 
       const label = DATE_MODE_LABEL[dateMode];
       let countText = `${label} ${displayed.length} 檔展覽`;
-      if (!includePermanent && permanentCount > 0) {
-        countText += `（另有 ${permanentCount} 檔常設展）`;
+      const hiddenParts = [];
+      if (permanentCount > 0) hiddenParts.push(`${permanentCount} 檔常設展`);
+      if (onlineCount > 0) hiddenParts.push(`${onlineCount} 檔線上展覽`);
+      if (hiddenParts.length > 0) {
+        countText += `（另有 ${hiddenParts.join("、")}）`;
       }
       document.getElementById("result-count").textContent = countText;
       document.getElementById("card-list").innerHTML = displayed
@@ -322,6 +337,7 @@
       document.getElementById("custom-start").addEventListener("change", render);
       document.getElementById("custom-end").addEventListener("change", render);
       document.getElementById("include-permanent").addEventListener("change", render);
+      document.getElementById("include-online").addEventListener("change", render);
 
       render();
     }
