@@ -8,8 +8,9 @@ name: Update events.json
 # 也開放手動觸發（workflow_dispatch），不用等到下週一才能測試這支 workflow。
 #
 # 目前 build-events.mjs 只會轉換 repo 裡既有的靜態檔案（sample.json、
-# data/tfam-overrides.json、選用的 data/tfam-raw.json），還沒有接上
-# 「即時抓取 cloud.culture.tw / data.taipei」的步驟——所以在那個抓取步驟
+# data/tfam-overrides.json、選用的 data/tfam-raw.json、選用的
+# data/culture-express-raw.json），還沒有接上「即時抓取 cloud.culture.tw /
+# data.taipei / cultureexpress.taipei」的步驟——所以在那個抓取步驟
 # 做出來之前，這支 workflow 每週執行的結果幾乎都會跟上次一樣（因為輸入沒變），
 # 這是預期中的行為，不是 bug。見 schema.md 多資料來源架構章節。
 
