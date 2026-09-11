@@ -1,0 +1,25 @@
+[
+  {
+    "id": "moc-exhibitions",
+    "name": "文化部展覽資訊（category=6）",
+    "type": "official_api",
+    "url": "https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFindTypeJ&category=6",
+    "enabled": true,
+    "location": null,
+    "requiresReview": false
+  },
+  {
+    "id": "tfam",
+    "name": "臺北市立美術館（data.taipei）",
+    "type": "official_api",
+    "url": "https://data.taipei/api/v1/dataset/1700a7e6-3d27-47f9-89d9-1811c9f7489c?scope=resourceAquire",
+    "enabled": true,
+    "location": {
+      "location": "臺北市中山區中山北路三段181號",
+      "locationName": "臺北市立美術館",
+      "latitude": 25.072656,
+      "longitude": 121.524559
+    },
+    "requiresReview": false
+  }
+]
