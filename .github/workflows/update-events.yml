@@ -1,0 +1,60 @@
+name: Update events.json
+
+# 每週一台灣時間 08:00 自動重新產生 events.json，有變化才 commit 到 main。
+#
+# 排程時間換算：台灣時間是 UTC+8，所以「台灣時間週一 08:00」= UTC 週一 00:00。
+# GitHub Actions 的 cron 只認 UTC，下面 "0 0 * * 1" 就是這個時間點。
+#
+# 也開放手動觸發（workflow_dispatch），不用等到下週一才能測試這支 workflow。
+#
+# 目前 build-events.mjs 只會轉換 repo 裡既有的靜態檔案（sample.json、
+# data/tfam-overrides.json、選用的 data/tfam-raw.json），還沒有接上
+# 「即時抓取 cloud.culture.tw / data.taipei」的步驟——所以在那個抓取步驟
+# 做出來之前，這支 workflow 每週執行的結果幾乎都會跟上次一樣（因為輸入沒變），
+# 這是預期中的行為，不是 bug。見 schema.md 多資料來源架構章節。
+
+# 這裡刻意把 on 用引號包起來寫成 "on"——不加引號的話，有些 YAML 1.1 剖析器
+# （例如 PyYAML 預設模式）會把裸的 on 當成布林值 true 解析（YAML 的經典
+# "挪威問題"）。GitHub Actions 自己的剖析器可以正確處理不加引號的 on，但
+# 其他工具（lint 工具、編輯器外掛）不一定能，加引號可以完全避開這個疑慮。
+"on":
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch: {}
+
+# 讓內建的 GITHUB_TOKEN 有權限把 commit push 回這個 repo。
+permissions:
+  contents: write
+
+# 避免排程跟手動觸發同時各跑一次、互相搶著 push。
+concurrency:
+  group: update-events
+  cancel-in-progress: false
+
+jobs:
+  update-events:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build events.json
+        run: node scripts/build-events.mjs
+
+      - name: Commit and push if events.json changed
+        run: |
+          if git diff --quiet -- events.json; then
+            echo "events.json 沒有變化，略過 commit。"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add events.json
+          git commit -m "chore: 每週自動更新 events.json"
+          git push

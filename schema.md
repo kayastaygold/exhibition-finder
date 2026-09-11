@@ -363,3 +363,20 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 ```
 
 **這一步刻意只做設定檔本身，沒有把它接進 `build-events.mjs`。** `build-events.mjs` 目前處理文化部跟北美館兩個來源的方式（`inputPath`／`TFAM_RAW_PATH`／`TFAM_OVERRIDES_PATH` 這幾個寫死的路徑）還沒有改成讀這個設定檔——那是之後要不要做、怎麼做的另一個決定（例如：`enabled: false` 要在腳本裡實際生效，勢必要改 `build-events.mjs` 去讀這份設定檔而不是寫死路徑），先把設定檔的形狀定下來、確認沒問題，再決定要不要動 `build-events.mjs`。
+
+### 8.2 GitHub Actions 排程（`.github/workflows/update-events.yml`）
+
+新增排程 workflow，每週一台灣時間 08:00（= UTC 週一 00:00，用 cron `0 0 * * 1`）自動重新產生 `events.json`，有變化才 commit 到 `main`；另外開放 `workflow_dispatch` 手動觸發，不用等到下週一才能測試。
+
+流程：checkout → 裝 Node 22 → `node scripts/build-events.mjs`（吃 repo 裡現有的 `sample.json`／`data/tfam-overrides.json`／選用的 `data/tfam-raw.json`，用預設路徑，不用額外參數）→ 用 `git diff --quiet -- events.json` 判斷有沒有變化，沒變化就跳過、避免產生空 commit，有變化才用 `github-actions[bot]` 身份 commit + push 回 `main`。
+
+需要 `permissions: contents: write` 讓內建的 `GITHUB_TOKEN` 有權限 push 回 repo；加了 `concurrency` 群組防止排程跟手動觸發同時各跑一次互相搶 push。
+
+**兩個要注意的地方：**
+
+1. **`on:` 刻意寫成 `"on":`（加引號）**——不加引號的話，有些 YAML 1.1 剖析器（例如 PyYAML 預設模式）會把裸的 `on` 當成布林值 `true` 解析（YAML 的經典「挪威問題」，這次寫的時候用 PyYAML 驗證語法真的踩到了）。GitHub Actions 自己的剖析器能正確處理不加引號的 `on`，但其他工具不一定能，加引號可以完全避開這個疑慮。
+2. **目前這支 workflow 每週執行幾乎都是 no-op**——`build-events.mjs` 只會轉換 repo 裡「已經存在」的靜態檔案，沒有接上「即時去抓 cloud.culture.tw／data.taipei 最新資料」的步驟（見 8.1 最後一段）。輸入沒變，輸出當然也不會變，`git diff --quiet` 會判斷沒有變化然後跳過 commit。這是預期中的行為，不是 bug——先把「排程 → build → 有變化才 commit」這條管線接好、驗證過，之後真正接上抓取邏輯（改掉 `sample.json`/`tfam-raw.json` 這些寫死路徑，改成排程當下即時抓）時，這支 workflow 本身不用再改。
+
+**已驗證**：本機用完全相同的指令（`node scripts/build-events.mjs`，repo 根目錄、不帶參數）跑過，輸出跟現有 `events.json` 一致（`git diff --quiet -- events.json` 判斷為無變化），確認「沒變化就跳過 commit」這條路徑邏輯正確；YAML 語法也用 PyYAML 解析驗證過。**無法驗證的部分**：這個 sandbox 連不上 GitHub Actions 的執行環境，沒辦法實際跑一次 workflow 確認 checkout/push 權限等在真實 Actions runner 上沒問題，這部分只能等 merge 後在你的 repo 上跑第一次（建議先手動觸發 `workflow_dispatch` 測一次，不要等排程）。
+
+> ⚠️ 這個分支是在「加入北美館資料源」PR 合併前切出來的，所以這裡跑 `build-events.mjs` 驗證時只處理了文化部的 344 筆，沒有北美館的部分（`data/tfam-overrides.json` 在這個分支上還不存在）。等兩個 PR 都合併進 `main`，workflow 執行時就會自動處理到兩個來源，不用再改這支 workflow 本身。
