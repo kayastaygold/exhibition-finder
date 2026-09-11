@@ -312,13 +312,69 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 
 ---
 
-## 8. 多資料來源架構（規劃中，見 issue 討論）
+## 8. 北美館（TFAM）資料源整合（issue #5）
 
-> ⚠️ 章節編號待確認：本節是在 `main` 尚未合併「加入北美館（TFAM）資料源」PR 時開的分支上寫的，那個 PR 合併後會多一個「## 8. 北美館（TFAM）資料源整合」章節，屆時本節要重新編號成「## 9.」，並把上面 §8 的內容視為 §8、本節變成 §9。先在這裡註記，合併時處理。
+### 8.1 背景
+
+文化部展覽 API（第 1～7 節的主要資料源）幾乎沒有大型場館的資料——用「北美館」「臺北市立美術館」「國家檔案館」「當代美術館」等關鍵字搜 `sample.json`（N=344）結構化欄位，命中數全部是 0；「故宮」「國美館」也只各 1 筆。北美館、國家檔案館、臺北市當代藝術館這三個完全沒有資料。這個 sandbox 環境連不上 `cloud.culture.tw`／`data.taipei`／`www.tfam.museum` 任何一個網域（出口網路政策擋掉，見前面章節的多次記錄），所以無法在本 session 直接查證 `category=15`／`category=all` 是否涵蓋這些場館，也無法直接呼叫 data.taipei 的 API，這兩項留在第 7 節「尚未驗證」清單。
+
+**決定採用的方案**：接北美館在 data.taipei 上的展覽資訊 API（[dataset 1700a7e6-3d27-47f9-89d9-1811c9f7489c](https://data.taipei/api/v1/dataset/1700a7e6-3d27-47f9-89d9-1811c9f7489c?scope=resourceAquire)），缺的欄位用人工整理的 override 檔案補。
+
+### 8.2 data.taipei API 欄位對應
+
+| data.taipei 欄位 | 對應到 | 備註 |
+|---|---|---|
+| `title` | `title` | |
+| `內容` | `description` | 品質好，直接用，不像文化部的 `descriptionFilterHtml` 需要消毒/摘要 |
+| `發布單位` | `showUnit` | |
+| `countycode`（固定 `63000`） | — | 不需要另外處理，county/district 交給 `extractCounty`/`extractDistrict` 從 override 給的 `location` 算，跟文化部資料走同一套邏輯 |
+| （無） | `startDate`／`endDate`／`imageUrl`／`location` | **API 缺這四個欄位**，這是這次要補的重點 |
+| （無） | UID | API 沒有唯一識別碼，`uid` 由 `title` 算穩定雜湊產生（`tfam-<hash>`），同一標題每次 build 結果一致 |
+
+### 8.3 `data/tfam-overrides.json` 與合併邏輯
+
+`scripts/build-events.mjs` 新增 `loadTfamEvents()`：
+
+1. 讀 `data/tfam-overrides.json`（**必要**，人工整理的補值清單，每筆用 `title` 當比對 key）
+2. 讀 `data/tfam-raw.json`（**選用**——data.taipei API 的原始回傳，目前**還沒有抓取流程**，檔案不存在時當作空陣列，不會讓腳本壞掉）
+3. 依 `title` 把兩邊合併：`description`／`showUnit` 從 raw 拿（沒有 raw 資料就是空字串）；`startDate`／`endDate`／`imageUrl`／`location`／`locationName`／`latitude`／`longitude` 一律從 override 拿
+4. `isOnline` 優先用 override 裡明講的值（`"isOnline" in override`），沒講才照一般標題關鍵字規則猜——這是因為 #2「TFAM Net.Open」標題沒有「線上」兩個字，一般規則抓不到，需要人工標記
+5. `isPermanent` 照一般規則算，不開放 override（目前沒有需要）
+6. 每筆額外加 `source: "tfam"`，方便之後區分資料來源、除錯
+
+`overrides` 裡即使某個 `title`在 `tfam-raw.json`（或未來真正抓到的 API 回傳）裡完全找不到，也會照樣產生一筆事件——只是 `description`/`showUnit` 是空字串。這是刻意設計，因為 overrides 裡有 2 筆（王雅慧、調）是北美館官網有、但 data.taipei API 沒收錄的展覽，整筆資料本來就要靠人工補，不是「補值」而是「新增」。
+
+輸出時 `events = [...文化部事件, ...TFAM事件]`，攤平成同一個陣列，前端不用改——`index.html` 本來就是把 `events.json`當成單一陣列處理。
+
+### 8.4 目前 `data/tfam-overrides.json` 的 4 筆內容
+
+資料來源：WebSearch 查詢北美館官網及相關報導整理（這個 sandbox 連不上 `www.tfam.museum` 直接查證，見前面章節），已與使用者逐筆核對確認。
+
+原本整理了 7 筆，其中 3 筆（超現實主義：對話中的世界、造公園、TFAM Net.Open｜消失的反動）展期已早於整理當下（2026/09/11）結束，使用者確認直接刪除、不收錄，所以目前是 4 筆：
+
+| 展覽 | 展期 | 地點 | 備註 |
+|---|---|---|---|
+| 共感：存在的節奏 | 2026/05/09～2026/09/20 | 北美館固定地址 | |
+| 鬱卒的平面：李亦凡／第61屆威尼斯國際美術雙年展台灣館 | 2026/05/09～2026/11/22 | `location: "義大利威尼斯"`，經緯度 `null` | 北美館主辦但展出地點在義大利威尼斯 Palazzo delle Prigioni，**沒有套用北美館的台北座標**，避免產生錯誤地理資料；⚠️ 見 8.5 |
+| 王雅慧：旅行者 | 2026/09/12～2027/01/03 | 北美館固定地址 | data.taipei API 沒有這筆，整筆資料由 override 直接提供 |
+| 調：心境與聲景之間 | 2026/07/04～2026/09/27 | 北美館固定地址 | 同上，API 沒有這筆 |
+
+北美館固定地址：`location: "臺北市中山區中山北路三段181號"`、`locationName: "臺北市立美術館"`、`latitude: 25.072656`、`longitude: 121.524559`（套用後 `extractCounty`/`extractDistrict` 正確算出「臺北市」「中山區」，已驗證）。
+
+**圖片網址目前全部留空**（`imageUrl: ""` → 正規化成 `null`，前端會顯示佔位圖）——WebSearch 查不到實際圖片檔案網址（它只回傳文字摘要，沒辦法像直接開網頁一樣讀 `<img>`／`og:image` 標籤），已在官網專頁列出（見對話紀錄），之後有網路權限的環境可以直接抓。
+
+### 8.5 已知的資料品質問題
+
+- **卡片上的地點顯示文字對威尼斯這筆特例不夠精確**：目前顯示「📍 威尼斯雙年展台灣館（縣市未知）」——`(縣市未知)` 這個字眼原本是給「資料缺漏」用的（見 4-6 的 15 筆真缺地址資料），套在「故意設計成沒有台灣縣市」的這筆上語意不太精準，但不影響篩選邏輯正確性（不會被誤配到任何台灣縣市底下）。純粹是顯示文字可以再修飾的小地方，先如實記錄，**使用者已確認之後再改**。
+- **`tfam-raw.json`（data.taipei API 的原始回傳）還沒有抓取流程**，目前 4 筆事件的 `description`／`showUnit` 全部是空字串。已經用假資料驗證過合併邏輯本身沒問題，但要在正式資料裡看到真的簡介/發布單位文字，還需要之後接上實際抓取 data.taipei API 的步驟（見第 9 節的多資料來源自動化管線）。
+
+---
+
+## 9. 多資料來源架構
 
 未來計畫加入更多展覽資料來源（北美館、臺北市當代藝術館、新北市美術館、各藝廊等），需要把現有「一支腳本讀一份固定樣本」的做法，改成可以掛多個來源的架構。分三步做，這裡先做第一步。
 
-### 8.1 來源設定檔（`data/sources.json`）
+### 9.1 來源設定檔（`data/sources.json`）
 
 新增 `data/sources.json`，每個來源一個物件：
 
@@ -330,7 +386,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 | `url` | API 端點或網站網址 |
 | `enabled` | `true`/`false`，之後要暫停某個來源（例如 API 掛了、資料品質有問題）不用刪設定，關掉就好 |
 | `location` | 固定館址資訊（`location`/`locationName`/`latitude`/`longitude`），像北美館這種「全部展覽都在同一個地點」的來源才有值；文化部這種每筆活動自己帶地點的來源是 `null` |
-| `requiresReview` | 布林值，**先只加欄位、邏輯還沒做**（見 8.3）。這次先設 `false`——之後加藝廊這種來源可信度較低的資料時，才會用這個欄位決定要不要先過 PR 審核再進 `main`，而不是像現在這樣直接被排程自動 commit |
+| `requiresReview` | 布林值，**先只加欄位、邏輯還沒做**（第三步，這次沒做）。這次先設 `false`——之後加藝廊這種來源可信度較低的資料時，才會用這個欄位決定要不要先過 PR 審核再進 `main`，而不是像現在這樣直接被排程自動 commit |
 
 目前已知的兩個來源：
 
@@ -364,7 +420,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 
 **這一步刻意只做設定檔本身，沒有把它接進 `build-events.mjs`。** `build-events.mjs` 目前處理文化部跟北美館兩個來源的方式（`inputPath`／`TFAM_RAW_PATH`／`TFAM_OVERRIDES_PATH` 這幾個寫死的路徑）還沒有改成讀這個設定檔——那是之後要不要做、怎麼做的另一個決定（例如：`enabled: false` 要在腳本裡實際生效，勢必要改 `build-events.mjs` 去讀這份設定檔而不是寫死路徑），先把設定檔的形狀定下來、確認沒問題，再決定要不要動 `build-events.mjs`。
 
-### 8.2 GitHub Actions 排程（`.github/workflows/update-events.yml`）
+### 9.2 GitHub Actions 排程（`.github/workflows/update-events.yml`）
 
 新增排程 workflow，每週一台灣時間 08:00（= UTC 週一 00:00，用 cron `0 0 * * 1`）自動重新產生 `events.json`，有變化才 commit 到 `main`；另外開放 `workflow_dispatch` 手動觸發，不用等到下週一才能測試。
 
@@ -375,8 +431,6 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 **兩個要注意的地方：**
 
 1. **`on:` 刻意寫成 `"on":`（加引號）**——不加引號的話，有些 YAML 1.1 剖析器（例如 PyYAML 預設模式）會把裸的 `on` 當成布林值 `true` 解析（YAML 的經典「挪威問題」，這次寫的時候用 PyYAML 驗證語法真的踩到了）。GitHub Actions 自己的剖析器能正確處理不加引號的 `on`，但其他工具不一定能，加引號可以完全避開這個疑慮。
-2. **目前這支 workflow 每週執行幾乎都是 no-op**——`build-events.mjs` 只會轉換 repo 裡「已經存在」的靜態檔案，沒有接上「即時去抓 cloud.culture.tw／data.taipei 最新資料」的步驟（見 8.1 最後一段）。輸入沒變，輸出當然也不會變，`git diff --quiet` 會判斷沒有變化然後跳過 commit。這是預期中的行為，不是 bug——先把「排程 → build → 有變化才 commit」這條管線接好、驗證過，之後真正接上抓取邏輯（改掉 `sample.json`/`tfam-raw.json` 這些寫死路徑，改成排程當下即時抓）時，這支 workflow 本身不用再改。
+2. **目前這支 workflow 每週執行幾乎都是 no-op**——`build-events.mjs` 只會轉換 repo 裡「已經存在」的靜態檔案，沒有接上「即時去抓 cloud.culture.tw／data.taipei 最新資料」的步驟（見 9.1 最後一段）。輸入沒變，輸出當然也不會變，`git diff --quiet` 會判斷沒有變化然後跳過 commit。這是預期中的行為，不是 bug——先把「排程 → build → 有變化才 commit」這條管線接好、驗證過，之後真正接上抓取邏輯（改掉 `sample.json`/`tfam-raw.json` 這些寫死路徑，改成排程當下即時抓）時，這支 workflow 本身不用再改。
 
 **已驗證**：本機用完全相同的指令（`node scripts/build-events.mjs`，repo 根目錄、不帶參數）跑過，輸出跟現有 `events.json` 一致（`git diff --quiet -- events.json` 判斷為無變化），確認「沒變化就跳過 commit」這條路徑邏輯正確；YAML 語法也用 PyYAML 解析驗證過。**無法驗證的部分**：這個 sandbox 連不上 GitHub Actions 的執行環境，沒辦法實際跑一次 workflow 確認 checkout/push 權限等在真實 Actions runner 上沒問題，這部分只能等 merge 後在你的 repo 上跑第一次（建議先手動觸發 `workflow_dispatch` 測一次，不要等排程）。
-
-> ⚠️ 這個分支是在「加入北美館資料源」PR 合併前切出來的，所以這裡跑 `build-events.mjs` 驗證時只處理了文化部的 344 筆，沒有北美館的部分（`data/tfam-overrides.json` 在這個分支上還不存在）。等兩個 PR 都合併進 `main`，workflow 執行時就會自動處理到兩個來源，不用再改這支 workflow 本身。

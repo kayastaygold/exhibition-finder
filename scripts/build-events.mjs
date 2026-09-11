@@ -1,18 +1,25 @@
 #!/usr/bin/env node
-// 把文化部展覽 API 的原始 JSON（見 schema.md）轉成前端讀取用的精簡靜態檔 events.json。
+// 把文化部展覽 API 的原始 JSON（見 schema.md）轉成前端讀取用的精簡靜態檔 events.json，
+// 再疊上北美館（TFAM）的資料（見 schema.md「大型場館資料源」、issue #5）。
 //
 // 用法：
-//   node scripts/build-events.mjs [輸入檔路徑] [輸出檔路徑]
-//   預設輸入 ./sample.json，輸出 ./events.json
+//   node scripts/build-events.mjs [文化部輸入檔路徑] [輸出檔路徑]
+//   預設文化部輸入 ./sample.json，輸出 ./events.json
 //
-// 這支腳本只做「轉換」，不做「抓取」——抓取（呼叫 cloud.culture.tw）之後由
+// 這支腳本只做「轉換」，不做「抓取」——抓取（呼叫 cloud.culture.tw、data.taipei）之後由
 // GitHub Actions 排程另外處理（見 schema.md 第 5 節），這裡先用本地的
 // sample.json 當輸入，之後把抓取結果換掉輸入檔即可,不用改這支腳本。
+//
+// 北美館資料源固定讀 data/tfam-raw.json（data.taipei API 的原始回傳，選用——
+// 這個檔案還不存在也沒關係，見下方 loadTfamEvents() 的說明）跟
+// data/tfam-overrides.json（人工補值，必要）。
 
 import { readFile, writeFile } from "node:fs/promises";
 
 const inputPath = process.argv[2] ?? "sample.json";
 const outputPath = process.argv[3] ?? "events.json";
+const TFAM_RAW_PATH = "data/tfam-raw.json";
+const TFAM_OVERRIDES_PATH = "data/tfam-overrides.json";
 
 // 台灣 22 個縣市，用來從 location 地址字串抽出縣市（含正體「臺」與俗體「台」兩種寫法）。
 // 見 schema.md 4.1.1：實測樣本中僅出現「臺」，但正則仍涵蓋「台」以防未來資料混用。
@@ -202,16 +209,117 @@ function buildEvent(raw) {
   };
 }
 
+// 北美館（TFAM）用 data.taipei 的展覽 API 當主要資料源，但這支 API 缺
+// startDate/endDate/imageUrl/location 四個欄位（見 issue #5 調查結果），要靠
+// data/tfam-overrides.json 人工補值。兩邊用 title 當比對 key（data.taipei 的
+// 展覽資料沒有 UID 可用）。
+//
+// 欄位對應（data.taipei → 我們的資料模型，見 issue #5）：
+//   title      → title
+//   內容        → description（品質好，直接用，不用像 descriptionFilterHtml 那樣消毒摘要）
+//   發布單位     → showUnit
+//   （countycode 固定是台北市，但既然 override 本來就要手動給 location，
+//     county/district 交給 extractCounty/extractDistrict 從 override 的 location 算，
+//     不用另外處理 countycode）
+//
+// 為什麼要能在「raw 沒有這筆」的情況下還是產生事件：overrides 裡有兩筆
+// （王雅慧、調）是北美館官網有、但 data.taipei API 沒有的展覽，整筆資料都是
+// 人工建的，不是「補值」而是「新增」，見 issue #5 討論。
+
+// 簡單、無相依套件的字串雜湊（djb2），拿來把 title 轉成穩定的 uid 後綴——
+// 同一個 title 每次 build 都會產生同一個 uid，不會因為陣列順序變動而跳號。
+function stableSlug(str) {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash * 33) ^ str.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+// 讀取 data.taipei 的原始 TFAM 展覽資料（如果檔案存在）跟人工 override
+// （data/tfam-overrides.json，必要），合併成跟 buildEvent() 輸出一樣的事件物件陣列。
+//
+// tfam-raw.json 目前還沒有抓取流程（見檔案開頭的說明），所以刻意設計成
+// 「檔案不存在就當作空陣列」而不是拋錯——這樣 overrides 裡的每一筆還是會照樣
+// 產生事件（只是 description/showUnit 會是空字串，因為沒有 raw 資料可以補），
+// 之後接上真正的抓取流程也不用改這支腳本。
+async function loadTfamEvents() {
+  let overrides;
+  try {
+    overrides = JSON.parse(await readFile(TFAM_OVERRIDES_PATH, "utf-8"));
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      console.log(`${TFAM_OVERRIDES_PATH} 不存在，略過北美館資料`);
+      return [];
+    }
+    throw err;
+  }
+
+  let rawByTitle = new Map();
+  try {
+    const raw = JSON.parse(await readFile(TFAM_RAW_PATH, "utf-8"));
+    for (const r of raw) {
+      rawByTitle.set(r.title, r);
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+    console.log(`${TFAM_RAW_PATH} 不存在，北美館展覽的 description/showUnit 先留空`);
+  }
+
+  return overrides.map((override) => {
+    const raw = rawByTitle.get(override.title) ?? {};
+
+    const showInfoEntry = {
+      location: override.location ?? "",
+      locationName: override.locationName ?? "",
+      county: extractCounty(override.location),
+      district: extractDistrict(override.location),
+      latitude: normalizeCoord(override.latitude, -90, 90),
+      longitude: normalizeCoord(override.longitude, -180, 180),
+      time: "",
+      endTime: "",
+      onSales: "UNKNOWN",
+      price: "",
+    };
+
+    const merged = {
+      title: override.title,
+      startDate: override.startDate,
+      endDate: override.endDate,
+    };
+
+    return {
+      uid: `tfam-${stableSlug(override.title)}`,
+      title: override.title,
+      startDate: override.startDate,
+      endDate: override.endDate,
+      imageUrl: override.imageUrl && override.imageUrl.trim() !== "" ? override.imageUrl : null,
+      description: raw.內容 ?? "",
+      showUnit: raw.發布單位 ?? "",
+      isPermanent: isPermanentExhibition(merged),
+      // isOnline 優先用 override 明講的值（例如 Net.Open 標題沒有「線上」兩個字，
+      // 一般的關鍵字規則抓不到，靠人工標記），override 沒講才用一般規則猜。
+      isOnline: "isOnline" in override ? Boolean(override.isOnline) : isOnlineExhibition(merged),
+      source: "tfam",
+      showInfo: [showInfoEntry],
+    };
+  });
+}
+
 async function main() {
   const raw = JSON.parse(await readFile(inputPath, "utf-8"));
   if (!Array.isArray(raw)) {
     throw new Error(`輸入檔不是陣列：${inputPath}`);
   }
 
-  const events = raw.map(buildEvent);
+  const cultureEvents = raw.map(buildEvent);
+  const tfamEvents = await loadTfamEvents();
+  const events = [...cultureEvents, ...tfamEvents];
 
   await writeFile(outputPath, JSON.stringify(events), "utf-8");
-  console.log(`已從 ${inputPath}（${raw.length} 筆）產生 ${outputPath}（${events.length} 筆）`);
+  console.log(
+    `已從 ${inputPath}（${raw.length} 筆）+ 北美館（${tfamEvents.length} 筆）產生 ${outputPath}（${events.length} 筆）`
+  );
 }
 
 main().catch((err) => {
