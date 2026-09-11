@@ -309,3 +309,63 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 - [ ] `category=all` 或其他 category 是否會出現 `showInfo` 陣列長度 > 1 的巡迴展案例
 - [ ] 跨日重新抓取後 `UID` 是否穩定不變
 - [ ] `endDate < today` 的過期活動實際佔比
+
+---
+
+## 8. 北美館（TFAM）資料源整合（issue #5）
+
+### 8.1 背景
+
+文化部展覽 API（第 1～7 節的主要資料源）幾乎沒有大型場館的資料——用「北美館」「臺北市立美術館」「國家檔案館」「當代美術館」等關鍵字搜 `sample.json`（N=344）結構化欄位，命中數全部是 0；「故宮」「國美館」也只各 1 筆。北美館、國家檔案館、臺北市當代藝術館這三個完全沒有資料。這個 sandbox 環境連不上 `cloud.culture.tw`／`data.taipei`／`www.tfam.museum` 任何一個網域（出口網路政策擋掉，見前面章節的多次記錄），所以無法在本 session 直接查證 `category=15`／`category=all` 是否涵蓋這些場館，也無法直接呼叫 data.taipei 的 API，這兩項留在第 7 節「尚未驗證」清單。
+
+**決定採用的方案**：接北美館在 data.taipei 上的展覽資訊 API（[dataset 1700a7e6-3d27-47f9-89d9-1811c9f7489c](https://data.taipei/api/v1/dataset/1700a7e6-3d27-47f9-89d9-1811c9f7489c?scope=resourceAquire)），缺的欄位用人工整理的 override 檔案補。
+
+### 8.2 data.taipei API 欄位對應
+
+| data.taipei 欄位 | 對應到 | 備註 |
+|---|---|---|
+| `title` | `title` | |
+| `內容` | `description` | 品質好，直接用，不像文化部的 `descriptionFilterHtml` 需要消毒/摘要 |
+| `發布單位` | `showUnit` | |
+| `countycode`（固定 `63000`） | — | 不需要另外處理，county/district 交給 `extractCounty`/`extractDistrict` 從 override 給的 `location` 算，跟文化部資料走同一套邏輯 |
+| （無） | `startDate`／`endDate`／`imageUrl`／`location` | **API 缺這四個欄位**，這是這次要補的重點 |
+| （無） | UID | API 沒有唯一識別碼，`uid` 由 `title` 算穩定雜湊產生（`tfam-<hash>`），同一標題每次 build 結果一致 |
+
+### 8.3 `data/tfam-overrides.json` 與合併邏輯
+
+`scripts/build-events.mjs` 新增 `loadTfamEvents()`：
+
+1. 讀 `data/tfam-overrides.json`（**必要**，人工整理的補值清單，每筆用 `title` 當比對 key）
+2. 讀 `data/tfam-raw.json`（**選用**——data.taipei API 的原始回傳，目前**還沒有抓取流程**，檔案不存在時當作空陣列，不會讓腳本壞掉）
+3. 依 `title` 把兩邊合併：`description`／`showUnit` 從 raw 拿（沒有 raw 資料就是空字串）；`startDate`／`endDate`／`imageUrl`／`location`／`locationName`／`latitude`／`longitude` 一律從 override 拿
+4. `isOnline` 優先用 override 裡明講的值（`"isOnline" in override`），沒講才照一般標題關鍵字規則猜——這是因為 #2「TFAM Net.Open」標題沒有「線上」兩個字，一般規則抓不到，需要人工標記
+5. `isPermanent` 照一般規則算，不開放 override（目前沒有需要）
+6. 每筆額外加 `source: "tfam"`，方便之後區分資料來源、除錯
+
+`overrides` 裡即使某個 `title`在 `tfam-raw.json`（或未來真正抓到的 API 回傳）裡完全找不到，也會照樣產生一筆事件——只是 `description`/`showUnit` 是空字串。這是刻意設計，因為 overrides 裡有 2 筆（王雅慧、調）是北美館官網有、但 data.taipei API 沒收錄的展覽，整筆資料本來就要靠人工補，不是「補值」而是「新增」。
+
+輸出時 `events = [...文化部事件, ...TFAM事件]`，攤平成同一個陣列，前端不用改——`index.html` 本來就是把 `events.json`當成單一陣列處理。
+
+### 8.4 目前 `data/tfam-overrides.json` 的 7 筆內容
+
+資料來源：WebSearch 查詢北美館官網及相關報導整理（這個 sandbox 連不上 `www.tfam.museum` 直接查證，見前面章節），已與使用者逐筆核對確認。
+
+| 展覽 | 展期 | 地點 | 備註 |
+|---|---|---|---|
+| 超現實主義：對話中的世界 | 2026/04/25～2026/08/30 | 北美館固定地址 | ⚠️ 見 8.5 |
+| 北美館開放網絡計畫 TFAM Net.Open｜消失的反動 | 2025/09/19～2026/08/31 | **無**（`location`/`county`/`district`/經緯度皆為空／`null`） | `isOnline: true`（人工標記，純線上展，標題沒有「線上」關鍵字，一般規則抓不到）；⚠️ 見 8.5 |
+| 造公園 | 2026/03/28～2026/08/30 | 北美館固定地址 | ⚠️ 見 8.5 |
+| 共感：存在的節奏 | 2026/05/09～2026/09/20 | 北美館固定地址 | |
+| 鬱卒的平面：李亦凡／第61屆威尼斯國際美術雙年展台灣館 | 2026/05/09～2026/11/22 | `location: "義大利威尼斯"`，經緯度 `null` | 北美館主辦但展出地點在義大利威尼斯 Palazzo delle Prigioni，**沒有套用北美館的台北座標**，避免產生錯誤地理資料 |
+| 王雅慧：旅行者 | 2026/09/12～2027/01/03 | 北美館固定地址 | data.taipei API 沒有這筆，整筆資料由 override 直接提供 |
+| 調：心境與聲景之間 | 2026/07/04～2026/09/27 | 北美館固定地址 | 同上，API 沒有這筆 |
+
+北美館固定地址：`location: "臺北市中山區中山北路三段181號"`、`locationName: "臺北市立美術館"`、`latitude: 25.072656`、`longitude: 121.524559`（套用後 `extractCounty`/`extractDistrict` 正確算出「臺北市」「中山區」，已驗證）。
+
+**圖片網址目前全部留空**（`imageUrl: ""` → 正規化成 `null`，前端會顯示佔位圖）——WebSearch 查不到實際圖片檔案網址（它只回傳文字摘要，沒辦法像直接開網頁一樣讀 `<img>`／`og:image` 標籤），已在官網專頁列出（見對話紀錄），之後有網路權限的環境可以直接抓。
+
+### 8.5 已知的資料品質問題
+
+- **3 筆展期已早於本次整理的日期（2026/09/11）結束**：超現實主義（8/30 迄）、造公園（8/30 迄）、Net.Open（8/31 迄）。這些日期是用 WebSearch 查到的，可能是文章寫作當下的資訊、之後可能有展期延長但沒查到，**使用者已確認保留這幾筆**，但這代表：(a) 這幾筆展覽在「今天／本週／本月」篩選下不會出現（時間篩選邏輯正確運作），只有在「不限時間」或涵蓋過去日期的自訂區間才看得到；(b) 這是文化部資料源目前沒有的情況——文化部 API 本身只回傳未過期的展覽（見 4.1），TFAM 這批用人工 override 補的資料則可能包含已過期項目，未來重新核對這幾筆的真實展期時要注意。
+- **卡片上的地點顯示文字對這兩筆特例不夠精確**：Net.Open（純線上展）目前顯示「📍 （縣市未知）」，威尼斯那筆顯示「📍 威尼斯雙年展台灣館（縣市未知）」——`(縣市未知)` 這個字眼原本是給「資料缺漏」用的（見 4-6 的 15 筆真缺地址資料），套在「故意設計成沒有台灣縣市」的這兩筆上語意不太精準，但不影響篩選邏輯正確性（不會被誤配到任何台灣縣市底下）。純粹是顯示文字可以再修飾的小地方，這次沒有動，先如實記錄。
+- **`tfam-raw.json`（data.taipei API 的原始回傳）還沒有抓取流程**，目前 7 筆事件的 `description`／`showUnit` 全部是空字串。已經用假資料驗證過合併邏輯本身沒問題（見 commit 訊息），但要在正式資料裡看到真的簡介/發布單位文字，還需要之後接上實際抓取 data.taipei API 的步驟（可能是 GitHub Actions，見第 5 節架構）。

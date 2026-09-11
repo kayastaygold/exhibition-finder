@@ -1,0 +1,74 @@
+[
+  {
+    "title": "超現實主義：對話中的世界",
+    "startDate": "2026/04/25",
+    "endDate": "2026/08/30",
+    "imageUrl": "",
+    "location": "臺北市中山區中山北路三段181號",
+    "locationName": "臺北市立美術館",
+    "latitude": 25.072656,
+    "longitude": 121.524559
+  },
+  {
+    "title": "北美館開放網絡計畫 TFAM Net.Open│消失的反動",
+    "startDate": "2025/09/19",
+    "endDate": "2026/08/31",
+    "imageUrl": "",
+    "location": "",
+    "locationName": "",
+    "latitude": null,
+    "longitude": null,
+    "isOnline": true
+  },
+  {
+    "title": "造公園",
+    "startDate": "2026/03/28",
+    "endDate": "2026/08/30",
+    "imageUrl": "",
+    "location": "臺北市中山區中山北路三段181號",
+    "locationName": "臺北市立美術館",
+    "latitude": 25.072656,
+    "longitude": 121.524559
+  },
+  {
+    "title": "共感：存在的節奏",
+    "startDate": "2026/05/09",
+    "endDate": "2026/09/20",
+    "imageUrl": "",
+    "location": "臺北市中山區中山北路三段181號",
+    "locationName": "臺北市立美術館",
+    "latitude": 25.072656,
+    "longitude": 121.524559
+  },
+  {
+    "title": "鬱卒的平面：李亦凡／第61屆威尼斯國際美術雙年展台灣館",
+    "startDate": "2026/05/09",
+    "endDate": "2026/11/22",
+    "imageUrl": "",
+    "location": "義大利威尼斯",
+    "locationName": "威尼斯雙年展台灣館",
+    "latitude": null,
+    "longitude": null,
+    "isOnline": false
+  },
+  {
+    "title": "王雅慧：旅行者",
+    "startDate": "2026/09/12",
+    "endDate": "2027/01/03",
+    "imageUrl": "",
+    "location": "臺北市中山區中山北路三段181號",
+    "locationName": "臺北市立美術館",
+    "latitude": 25.072656,
+    "longitude": 121.524559
+  },
+  {
+    "title": "調：心境與聲景之間",
+    "startDate": "2026/07/04",
+    "endDate": "2026/09/27",
+    "imageUrl": "",
+    "location": "臺北市中山區中山北路三段181號",
+    "locationName": "臺北市立美術館",
+    "latitude": 25.072656,
+    "longitude": 121.524559
+  }
+]
