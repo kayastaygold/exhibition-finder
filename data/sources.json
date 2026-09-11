@@ -21,5 +21,14 @@
       "longitude": 121.524559
     },
     "requiresReview": false
+  },
+  {
+    "id": "culture-express",
+    "name": "文化快遞（臺北市文化局）",
+    "type": "official_api",
+    "url": "https://cultureexpress.taipei/OpenData/Event/C000003",
+    "enabled": true,
+    "location": null,
+    "requiresReview": false
   }
 ]

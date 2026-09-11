@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 // 把文化部展覽 API 的原始 JSON（見 schema.md）轉成前端讀取用的精簡靜態檔 events.json，
-// 再疊上北美館（TFAM）的資料（見 schema.md「大型場館資料源」、issue #5）。
+// 再疊上北美館（TFAM，見 schema.md 第 8 節、issue #5）跟文化快遞（Culture Express，
+// 見 schema.md 第 10 節）的資料。
 //
 // 用法：
 //   node scripts/build-events.mjs [文化部輸入檔路徑] [輸出檔路徑]
 //   預設文化部輸入 ./sample.json，輸出 ./events.json
 //
-// 這支腳本只做「轉換」，不做「抓取」——抓取（呼叫 cloud.culture.tw、data.taipei）之後由
-// GitHub Actions 排程另外處理（見 schema.md 第 5 節），這裡先用本地的
-// sample.json 當輸入，之後把抓取結果換掉輸入檔即可,不用改這支腳本。
+// 這支腳本只做「轉換」，不做「抓取」——抓取（呼叫 cloud.culture.tw、data.taipei、
+// cultureexpress.taipei）之後由 GitHub Actions 排程另外處理（見 schema.md 第 5 節），
+// 這裡先用本地的 sample.json 當輸入，之後把抓取結果換掉輸入檔即可,不用改這支腳本。
 //
 // 北美館資料源固定讀 data/tfam-raw.json（data.taipei API 的原始回傳，選用——
 // 這個檔案還不存在也沒關係，見下方 loadTfamEvents() 的說明）跟
 // data/tfam-overrides.json（人工補值，必要）。
+//
+// 文化快遞資料源固定讀 data/culture-express-raw.json（cultureexpress.taipei
+// C000003 端點的原始回傳快照，選用——不存在就跳過，見下方 loadCultureExpressEvents()）。
 
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -20,6 +24,7 @@ const inputPath = process.argv[2] ?? "sample.json";
 const outputPath = process.argv[3] ?? "events.json";
 const TFAM_RAW_PATH = "data/tfam-raw.json";
 const TFAM_OVERRIDES_PATH = "data/tfam-overrides.json";
+const CULTURE_EXPRESS_RAW_PATH = "data/culture-express-raw.json";
 
 // 台灣 22 個縣市，用來從 location 地址字串抽出縣市（含正體「臺」與俗體「台」兩種寫法）。
 // 見 schema.md 4.1.1：實測樣本中僅出現「臺」，但正則仍涵蓋「台」以防未來資料混用。
@@ -202,6 +207,9 @@ function buildEvent(raw) {
     showUnit: raw.showUnit ?? "",
     isPermanent: isPermanentExhibition(raw),
     isOnline: isOnlineExhibition(raw),
+    // 跟 tfam/culture_express 事件一樣標出資料來源，方便除錯／未來依來源篩選
+    // （見 schema.md 第 10 節整合文化快遞時一併補上，之前只有 tfam 事件有這個欄位）。
+    source: "moc",
     // showInfo 保留成陣列 — 一個展覽可能對應多個場次/地點（巡迴展），
     // 即使本次樣本每筆都恰好長度 1，資料模型仍不能寫死成單一地點。
     // 見 schema.md 第 3 節。
@@ -306,6 +314,214 @@ async function loadTfamEvents() {
   });
 }
 
+// 文化快遞（台北市文化局，cultureexpress.taipei C000003）資料源整合。
+// 見 schema.md 第 10 節、issue 討論的分析結果與整合方案。
+//
+// 跟文化部/北美館不同，文化快遞這支 API 一次回傳「展覽、講座、表演、音樂現場…」
+// 共 9 種 Category 混在同一個陣列裡，所以要先篩出 Category === "展覽" 才是我們要的。
+//
+// 日期格式是 "YYYY-MM-DD HH:MM:SS"（文化部是 "YYYY/MM/DD"），要先轉換格式，
+// 這樣才能重用既有的 parseDate()/isPermanentExhibition() 等函式，不用另外寫一套。
+function toSlashDate(s) {
+  if (!s) return "";
+  const datePart = s.split(" ")[0];
+  const [y, m, d] = datePart.split("-");
+  if (!y || !m || !d) return "";
+  return `${y}/${m}/${d}`;
+}
+
+// showInfo.time/endTime 保留完整日期+時間（跟文化部樣本裡 "2026/09/08 09:00:00"
+// 這種格式一致），只把日期部分的連字號換成斜線，時間部分原樣保留。
+function toSlashDateTime(s) {
+  if (!s) return "";
+  const [datePart, timePart] = s.split(" ");
+  const slashDate = toSlashDate(datePart);
+  if (!slashDate) return "";
+  return timePart ? `${slashDate} ${timePart}` : slashDate;
+}
+
+// 座標欄位有兩種已知的髒值模式（實測樣本，見 schema.md 第 10 節）：
+//   1. sentinel 值：地點未知時 Longitude/Latitude 都是 0.0（不是 null），
+//      直接判 0/0 為「無座標」，避免被 normalizeCoord() 誤判成大西洋幾內亞灣的座標。
+//   2. 兩欄互換：少數資料把經緯度寫反，數值本身仍落在合理範圍，只是欄位對調
+//      （Longitude 落在台灣緯度的區間 24~26、Latitude 落在台灣經度的區間 120~122）。
+//      這個規則抓的是「數值形狀」不是欄位名稱，抓到就對調回來。
+// 兩個規則都不成立的情況，維持原樣，最後仍會過 normalizeCoord() 做範圍防呆。
+function fixCoordSwap(lng, lat) {
+  const lngNum = Number(lng);
+  const latNum = Number(lat);
+  if (lngNum === 0 && latNum === 0) return { lat: null, lng: null };
+  if (
+    !Number.isNaN(lngNum) &&
+    !Number.isNaN(latNum) &&
+    lngNum >= 24 &&
+    lngNum <= 26 &&
+    latNum >= 120 &&
+    latNum <= 122
+  ) {
+    return { lat: lngNum, lng: latNum };
+  }
+  return { lat: latNum, lng: lngNum };
+}
+
+// 去標點、去空白、轉小寫，拿掉常見的全形/半形符號差異對比對結果的影響。
+// 用來給 titleSimilarity()/venuesMatch() 比對前正規化字串。
+function normalizeForCompare(s) {
+  if (!s) return "";
+  return s
+    .replace(/[「」『』【】[\]（）()\-—－:：,，。.!！?？、\s]/g, "")
+    .toLowerCase();
+}
+
+// 無相依套件的最長共同子序列（LCS）長度（標準 DP 寫法）。
+function longestCommonSubsequenceLength(a, b) {
+  const m = a.length;
+  const n = b.length;
+  let prev = new Array(n + 1).fill(0);
+  for (let i = 1; i <= m; i++) {
+    const curr = new Array(n + 1).fill(0);
+    for (let j = 1; j <= n; j++) {
+      curr[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], curr[j - 1]);
+    }
+    prev = curr;
+  }
+  return prev[n];
+}
+
+// 標題相似度：2 * LCS長度 / (兩字串長度總和)，範圍 0~1，兩邊都是空字串視為相同（1）。
+// 這個公式（Dice 係數）刻意選來貼近分析階段用 Python difflib.SequenceMatcher.ratio()
+// 算出來的數字，而不是用編輯距離（Levenshtein）——實測編輯距離版本會誤判「加了場館
+// 前綴」的狀況：文化快遞常把場館名當標題前綴（例如「北美館 - 共感：存在的節奏」對應
+// 文化部/北美館那邊單純的「共感：存在的節奏」），這種「整段前綴」在編輯距離下會被
+// 當成一長串插入成本，把相似度拉到 0.8 門檻以下；但用 LCS 為基礎的比率，因為分母是
+// 「兩邊長度總和」而不是「較長字串長度」，這種前綴差異影響小很多，「共感：存在的節奏」
+// 這組算出來是 0.82，跟分析階段的數字一致，門檻抓 > 0.8 也一樣能排除掉
+// 「大稻埕戲苑【請戲–布袋戲一條街】特展」vs「【特展】「請戲-布袋戲一條街」特展」
+// 這種措辭差異較大、不該視為同一筆的案例（算出來 0.71，低於門檻）。
+function titleSimilarity(a, b) {
+  const normA = normalizeForCompare(a);
+  const normB = normalizeForCompare(b);
+  const totalLen = normA.length + normB.length;
+  if (totalLen === 0) return 1;
+  const lcsLen = longestCommonSubsequenceLength(normA, normB);
+  return (2 * lcsLen) / totalLen;
+}
+
+// 場地是否相同：把兩個事件物件（buildEvent()/loadTfamEvents()/
+// buildCultureExpressEvent() 輸出的統一格式）能代表「場地」的字串都收集起來
+// （showUnit 主辦單位 + 每個 showInfo 的 locationName/location），正規化後
+// 互相比對是否有任一組是子字串關係。用「互相包含」而不要求完全相等，是因為
+// 同一場館在不同資料源常有不同寫法（例如「朱銘美術館」vs「(中華民國)朱銘」、
+// 「臺博館古生物館」vs「國立臺灣博物館」），完全相等比對會漏掉太多真正相同的場地。
+function collectVenueStrings(event) {
+  const strings = [event.showUnit ?? ""];
+  for (const s of event.showInfo ?? []) {
+    if (s.locationName) strings.push(s.locationName);
+    if (s.location) strings.push(s.location);
+  }
+  return strings.map(normalizeForCompare).filter((s) => s !== "");
+}
+
+function venuesMatch(eventA, eventB) {
+  const venuesA = collectVenueStrings(eventA);
+  const venuesB = collectVenueStrings(eventB);
+  for (const a of venuesA) {
+    for (const b of venuesB) {
+      if (a.includes(b) || b.includes(a)) return true;
+    }
+  }
+  return false;
+}
+
+// 是否為同一檔展覽：場地要相同，且標題相似度 > 0.8（見 titleSimilarity() 的
+// 演算法選擇說明）。這是您在分析階段確認的去重標準。
+function isSameExhibition(eventA, eventB) {
+  if (!venuesMatch(eventA, eventB)) return false;
+  return titleSimilarity(eventA.title, eventB.title) > 0.8;
+}
+
+// 把文化快遞單筆原始資料（Category === "展覽" 的那些）轉成跟 buildEvent()/
+// loadTfamEvents() 一致的事件物件。
+//
+// location 欄位的組法：文化快遞的 Address 欄位實測發現永遠等於 Area（都只是
+// 行政區名稱，不是完整街址，例：Area/Address 都是 "中正區"），所以不直接用
+// Address，改用 City + Area 組出 "臺北市中正區" 這種字串餵給既有的
+// extractCounty()/extractDistrict()；City 是 null 時（實測 343 筆裡有 3 筆
+// 展覽類是 null，通常是純線上/海外活動）location 就是空字串，county/district
+// 自然算出 null，不硬湊假資料。
+function buildCultureExpressEvent(raw) {
+  const startDate = toSlashDate(raw.StartDate);
+  const endDate = toSlashDate(raw.EndDate);
+  const { lat, lng } = fixCoordSwap(raw.Longitude, raw.Latitude);
+
+  const showInfoEntry = {
+    location: `${raw.City ?? ""}${raw.Area ?? ""}`,
+    locationName: raw.Venue ?? "",
+    county: extractCounty(`${raw.City ?? ""}${raw.Area ?? ""}`),
+    district: extractDistrict(`${raw.City ?? ""}${raw.Area ?? ""}`),
+    latitude: normalizeCoord(lat, -90, 90),
+    longitude: normalizeCoord(lng, -180, 180),
+    time: toSlashDateTime(raw.SessionStartDate),
+    endTime: toSlashDateTime(raw.SessionEndDate),
+    // onSales 沿用文化部樣本的語意（見 schema.md 4-11："Y"=售票、"N"=不須購票、
+    // "UNKNOWN"=未知），文化快遞的 TicketType 用「免費」對應 "N"、「售票」/「索票」
+    // 對應 "Y"，沒有 TicketType 資訊的才算 "UNKNOWN"。
+    onSales: raw.TicketType === "免費" ? "N" : raw.TicketType ? "Y" : "UNKNOWN",
+    price: raw.TicketPrice ?? "",
+  };
+
+  const merged = { title: raw.Caption, startDate, endDate };
+
+  return {
+    uid: `ce-${raw.ID}`,
+    title: raw.Caption ?? "",
+    startDate,
+    endDate,
+    // ImageFile 原封不動使用（先測試能否正常顯示，見整合方案討論），
+    // 不像 descriptionFilterHtml 那樣需要另外消毒或轉址。
+    imageUrl: raw.ImageFile && raw.ImageFile.trim() !== "" ? raw.ImageFile : null,
+    description: shortDescription(raw.Introduction),
+    showUnit: raw.Company ?? "",
+    isPermanent: isPermanentExhibition(merged),
+    isOnline: isOnlineExhibition(merged),
+    source: "culture_express",
+    showInfo: [showInfoEntry],
+  };
+}
+
+// 讀取文化快遞原始快照（data/culture-express-raw.json，如果不存在就優雅降級、
+// 回傳空陣列——這支腳本目前還沒有真正呼叫 cultureexpress.taipei 的抓取步驟，
+// 跟 tfam-raw.json 是一樣的設計）。
+//
+// 只保留 Category === "展覽" 的資料；同一個活動有多個場次時，原始資料會有多筆
+// ID 相同、只有 SessionStartDate/SessionEndDate 不同的列——實測目前只有 1 組
+// 這種情況，而且兩筆內容完全相同，所以用 ID 去重時直接保留第一筆即可，不需要
+// 把多個場次合併進同一個事件的 showInfo 陣列（跟文化部那種一個展覽對應多個
+// showInfo 的情況不一樣）。
+async function loadCultureExpressEvents() {
+  let raw;
+  try {
+    raw = JSON.parse(await readFile(CULTURE_EXPRESS_RAW_PATH, "utf-8"));
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      console.log(`${CULTURE_EXPRESS_RAW_PATH} 不存在，略過文化快遞資料`);
+      return [];
+    }
+    throw err;
+  }
+
+  const exhibitions = raw.filter((r) => r.Category === "展覽");
+  const seenIds = new Set();
+  const deduped = [];
+  for (const r of exhibitions) {
+    if (seenIds.has(r.ID)) continue;
+    seenIds.add(r.ID);
+    deduped.push(r);
+  }
+
+  return deduped.map(buildCultureExpressEvent);
+}
+
 async function main() {
   const raw = JSON.parse(await readFile(inputPath, "utf-8"));
   if (!Array.isArray(raw)) {
@@ -314,11 +530,39 @@ async function main() {
 
   const cultureEvents = raw.map(buildEvent);
   const tfamEvents = await loadTfamEvents();
-  const events = [...cultureEvents, ...tfamEvents];
+  const ceEvents = await loadCultureExpressEvents();
+
+  // 文化快遞資料跟文化部/北美館重疊時（同一檔展覽，標題相似度 > 0.8 且場地相同），
+  // 保留文化快遞版本（有圖片，資料品質較好），從對應的來源陣列移除被取代的那筆。
+  // tfam-overrides.json 本身不刪這兩筆——只是 build 出來的 events.json 不會再包含
+  // 它們的 tfam 版本，改用文化快遞版本。見整合方案討論。
+  let remainingCultureEvents = [...cultureEvents];
+  let remainingTfamEvents = [...tfamEvents];
+  let mocReplacedCount = 0;
+  let tfamReplacedCount = 0;
+
+  for (const ce of ceEvents) {
+    const mocMatchIdx = remainingCultureEvents.findIndex((ev) => isSameExhibition(ce, ev));
+    if (mocMatchIdx !== -1) {
+      remainingCultureEvents.splice(mocMatchIdx, 1);
+      mocReplacedCount++;
+      continue;
+    }
+    const tfamMatchIdx = remainingTfamEvents.findIndex((ev) => isSameExhibition(ce, ev));
+    if (tfamMatchIdx !== -1) {
+      remainingTfamEvents.splice(tfamMatchIdx, 1);
+      tfamReplacedCount++;
+    }
+  }
+
+  const events = [...remainingCultureEvents, ...remainingTfamEvents, ...ceEvents];
 
   await writeFile(outputPath, JSON.stringify(events), "utf-8");
   console.log(
-    `已從 ${inputPath}（${raw.length} 筆）+ 北美館（${tfamEvents.length} 筆）產生 ${outputPath}（${events.length} 筆）`
+    `已從 ${inputPath}（${raw.length} 筆，去重後 ${remainingCultureEvents.length} 筆）` +
+      `+ 北美館（${tfamEvents.length} 筆，去重後 ${remainingTfamEvents.length} 筆）` +
+      `+ 文化快遞（${ceEvents.length} 筆，取代了文化部 ${mocReplacedCount} 筆、北美館 ${tfamReplacedCount} 筆）` +
+      `產生 ${outputPath}（${events.length} 筆）`
   );
 }
 

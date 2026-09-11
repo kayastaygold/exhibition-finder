@@ -414,9 +414,20 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
       "longitude": 121.524559
     },
     "requiresReview": false
+  },
+  {
+    "id": "culture-express",
+    "name": "文化快遞（臺北市文化局）",
+    "type": "official_api",
+    "url": "https://cultureexpress.taipei/OpenData/Event/C000003",
+    "enabled": true,
+    "location": null,
+    "requiresReview": false
   }
 ]
 ```
+
+（`culture-express` 這筆是第 10 節整合文化快遞時補上的，當時 `build-events.mjs` 已經直接串接這個來源，跟本節最初寫這段時「先只做設定檔、不接程式」的狀態不同，見第 10 節。）
 
 **這一步刻意只做設定檔本身，沒有把它接進 `build-events.mjs`。** `build-events.mjs` 目前處理文化部跟北美館兩個來源的方式（`inputPath`／`TFAM_RAW_PATH`／`TFAM_OVERRIDES_PATH` 這幾個寫死的路徑）還沒有改成讀這個設定檔——那是之後要不要做、怎麼做的另一個決定（例如：`enabled: false` 要在腳本裡實際生效，勢必要改 `build-events.mjs` 去讀這份設定檔而不是寫死路徑），先把設定檔的形狀定下來、確認沒問題，再決定要不要動 `build-events.mjs`。
 
@@ -424,7 +435,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 
 新增排程 workflow，每週一台灣時間 08:00（= UTC 週一 00:00，用 cron `0 0 * * 1`）自動重新產生 `events.json`，有變化才 commit 到 `main`；另外開放 `workflow_dispatch` 手動觸發，不用等到下週一才能測試。
 
-流程：checkout → 裝 Node 22 → `node scripts/build-events.mjs`（吃 repo 裡現有的 `sample.json`／`data/tfam-overrides.json`／選用的 `data/tfam-raw.json`，用預設路徑，不用額外參數）→ 用 `git diff --quiet -- events.json` 判斷有沒有變化，沒變化就跳過、避免產生空 commit，有變化才用 `github-actions[bot]` 身份 commit + push 回 `main`。
+流程：checkout → 裝 Node 22 → `node scripts/build-events.mjs`（吃 repo 裡現有的 `sample.json`／`data/tfam-overrides.json`／選用的 `data/tfam-raw.json`／選用的 `data/culture-express-raw.json`，用預設路徑，不用額外參數）→ 用 `git diff --quiet -- events.json` 判斷有沒有變化，沒變化就跳過、避免產生空 commit，有變化才用 `github-actions[bot]` 身份 commit + push 回 `main`。
 
 需要 `permissions: contents: write` 讓內建的 `GITHUB_TOKEN` 有權限 push 回 repo；加了 `concurrency` 群組防止排程跟手動觸發同時各跑一次互相搶 push。
 
@@ -434,3 +445,83 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 2. **目前這支 workflow 每週執行幾乎都是 no-op**——`build-events.mjs` 只會轉換 repo 裡「已經存在」的靜態檔案，沒有接上「即時去抓 cloud.culture.tw／data.taipei 最新資料」的步驟（見 9.1 最後一段）。輸入沒變，輸出當然也不會變，`git diff --quiet` 會判斷沒有變化然後跳過 commit。這是預期中的行為，不是 bug——先把「排程 → build → 有變化才 commit」這條管線接好、驗證過，之後真正接上抓取邏輯（改掉 `sample.json`/`tfam-raw.json` 這些寫死路徑，改成排程當下即時抓）時，這支 workflow 本身不用再改。
 
 **已驗證**：本機用完全相同的指令（`node scripts/build-events.mjs`，repo 根目錄、不帶參數）跑過，輸出跟現有 `events.json` 一致（`git diff --quiet -- events.json` 判斷為無變化），確認「沒變化就跳過 commit」這條路徑邏輯正確；YAML 語法也用 PyYAML 解析驗證過。**無法驗證的部分**：這個 sandbox 連不上 GitHub Actions 的執行環境，沒辦法實際跑一次 workflow 確認 checkout/push 權限等在真實 Actions runner 上沒問題，這部分只能等 merge 後在你的 repo 上跑第一次（建議先手動觸發 `workflow_dispatch` 測一次，不要等排程）。
+
+---
+
+## 10. 文化快遞（Culture Express）資料源整合
+
+### 10.1 背景與分析結果
+
+台北市政府文化局「文化快遞」API（`https://cultureexpress.taipei/OpenData/Event/C000003`）是第三個接進來的資料源。這個 sandbox 連不上 `cultureexpress.taipei`（跟前面章節記錄的其他外部網域一樣被出口網路政策擋掉），資料是使用者手動抓取後貼進對話、由 Claude 存檔驗證的（跟第 8 節北美館資料的取得方式相同）。
+
+分析（N=343 筆原始資料，涵蓋回傳的全部 9 種 `Category`，不只展覽）結果：
+
+| 項目 | 結果 |
+|---|---|
+| `Category` 分布 | 講座 106、展覽 83、音樂現場 58、表演藝術 43、城市生活圈 30、親子活動 14、城外行腳 6、電影 2、專題特區 1 |
+| `Category === "展覽"` 筆數 | 83 筆原始列（含 1 組完全重複的 `ID`），去重後 82 筆 |
+| 展覽類有圖片（`ImageFile` 非空）比例 | 100%（82/82）——其實不只展覽類，**全部 343 筆的 `ImageFile` 都非空**，這支 API 似乎強制每筆都要有圖 |
+| 跟現有 `events.json` 的重疊 | 用「標題相似度 > 0.8 且場地相同」判斷，22 筆疑似重複（含北美館「共感：存在的節奏」「調：心境與聲景之間」這 2 筆跟 `tfam-overrides.json` 重疊的展覽） |
+| 資料量 vs 文化部 344 筆 | 兩者類別範圍不同（文化部 344 筆只有展覽類；文化快遞 343 筆橫跨 9 個類別），不能直接比較；文化快遞展覽類（82 筆）遠少於文化部（344 筆），文化快遞的價值主要在「有圖片、資料品質較好」而非「數量多」 |
+| `StartDate`/`EndDate` 格式 | `"YYYY-MM-DD HH:MM:SS"`（例：`"2021-11-15 09:30:00"`），343 筆全部符合，無例外 |
+
+**決定採用的方案**：只取 `Category === "展覽"` 的 82 筆，跟文化部 344 筆合併，標題相似度 > 0.8 且場地相同的視為重複，重疊的部分保留文化快遞版本（因為有圖片，資料品質較好）。
+
+### 10.2 `data/culture-express-raw.json` 與欄位對應
+
+跟第 8 節北美館的 `tfam-raw.json` 一樣，`data/culture-express-raw.json` 是原始 API 回傳的快照（**選用**，不存在時 `loadCultureExpressEvents()` 優雅降級、回傳空陣列，不會讓 build 掛掉），因為這支腳本目前還沒有真正呼叫 `cultureexpress.taipei` 的抓取流程。**存的是完整 343 筆、涵蓋全部 `Category`**，不是只存展覽類的 82 筆——`Category === "展覽"` 的篩選邏輯寫在 `build-events.mjs` 裡，不在資料檔階段先濾掉，這樣之後如果決定要納入「講座」「表演藝術」等其他類別，不用重新抓資料，只要改篩選條件。
+
+欄位對應（文化快遞 → 我們的資料模型）：
+
+| 文化快遞欄位 | 對應到 | 備註 |
+|---|---|---|
+| `ID` | `uid`（`ce-<ID>`） | 用真實 ID 而非像北美館那樣算標題雜湊，更穩定 |
+| `Caption` | `title` | |
+| `StartDate`/`EndDate` | `startDate`/`endDate` | 格式從 `"YYYY-MM-DD HH:MM:SS"` 轉成 `"YYYY/MM/DD"`（`toSlashDate()`），這樣才能重用既有的 `parseDate()`/`isPermanentExhibition()` 等函式 |
+| `ImageFile` | `imageUrl` | **原封不動使用**，不做額外處理（先測試能否正常顯示——這是使用者的整合方案裡明講的） |
+| `Introduction` | `description` | 重用既有的 `shortDescription()` 消毒＋摘要（順便處理常見的 `\r\n`） |
+| `Company` | `showUnit` | |
+| `City` + `Area` | `showInfo[].location` | **不是用 `Address` 欄位**——實測發現這支 API 的 `Address` 永遠等於 `Area`（都只是行政區名稱，不是完整街址，例：`Area`/`Address` 都是 `"中正區"`），改用 `City + Area` 組出 `"臺北市中正區"` 這種字串餵給既有的 `extractCounty()`/`extractDistrict()`；`City` 是 `null` 時（實測 82 筆展覽類裡有 2 筆是 `null`，通常是純線上/海外活動）`location` 就是空字串，county/district 自然算出 `null`，不硬湊假資料 |
+| `Venue` | `showInfo[].locationName` | |
+| `Longitude`/`Latitude` | `showInfo[].longitude`/`latitude` | 見 10.3 的兩個已知髒值處理規則 |
+| `SessionStartDate`/`SessionEndDate` | `showInfo[].time`/`endTime` | 格式轉換（`toSlashDateTime()`）保留完整日期+時間，只把日期部分的連字號換成斜線 |
+| `TicketType`/`TicketPrice` | `showInfo[].onSales`/`price` | `onSales` 沿用文化部樣本的語意（見 4-11：`"Y"`=售票、`"N"`=不須購票、`"UNKNOWN"`=未知）：`TicketType === "免費"` → `"N"`；有其他 `TicketType`（售票/索票）→ `"Y"`；沒有 `TicketType` → `"UNKNOWN"` |
+| `Category` | — | 只用來篩選 `=== "展覽"`，不寫進輸出的事件物件 |
+
+同一活動有多個場次時，原始資料會有多筆 `ID` 相同、只有 `SessionStartDate`/`SessionEndDate` 不同的列——實測目前只有 1 組這種情況，而且兩筆內容完全相同，所以用 `ID` 去重時直接保留第一筆即可，不需要像文化部那樣把多個場次合併進同一個事件的 `showInfo` 陣列。
+
+每筆額外加 `source: "culture_express"`；同時也把 `buildEvent()`（文化部）輸出補上 `source: "moc"`，讓三個來源的事件都能靠 `source` 欄位分辨（之前只有 tfam 事件有這個欄位）。
+
+### 10.3 座標髒值處理
+
+實測發現兩種已知的髒值模式：
+
+1. **sentinel 值**：地點未知時 `Longitude`/`Latitude` 都是 `0.0`（不是 `null`），直接判 `0/0` 為「無座標」，避免被既有的 `normalizeCoord()` 誤判成幾內亞灣的座標。
+2. **經緯度欄位互換**：少數資料把經緯度寫反，數值本身仍落在合理範圍，只是欄位對調（例如分析階段抓到的「2026集保藝術賞 平面創作徵件」：`Longitude: 25.13...`、`Latitude: 121.47...`，明顯是台灣緯度值跑到經度欄位）。判斷規則：若 `Longitude` 落在 24~26 之間且 `Latitude` 落在 120~122 之間，視為對調、交換後再用。這個規則抓的是「數值形狀」不是欄位名稱本身，抓到就對調回來；兩個規則都不成立的情況維持原樣。實測目前 82 筆展覽類資料裡沒有出現互換案例（3 筆是 sentinel、80 筆正常），但規則保留下來防未來資料出現。
+
+兩個規則處理完後，仍會過一次既有的 `normalizeCoord(-90~90 / -180~180)` 做範圍防呆。
+
+### 10.4 與現有資料的去重演算法
+
+在 `scripts/build-events.mjs` 的 `main()`：對每一筆文化快遞事件，依序在「文化部事件」「北美館事件」裡找場地相同、標題相似度 > 0.8 的項目，找到就從對應陣列移除（文化快遞版本蓋掉），最後 `events = [...去重後的文化部事件, ...去重後的北美館事件, ...文化快遞事件]`。
+
+- **場地相同**（`venuesMatch()`）：把兩邊事件的 `showUnit` + 每個 `showInfo` 的 `locationName`/`location` 收集起來，正規化（去標點、去空白、轉小寫）後互相比對是否有任一組是子字串關係。用「互相包含」而不要求完全相等，是因為同一場館在不同資料源常有不同寫法（例如「朱銘美術館」vs「(中華民國)朱銘」）。
+- **標題相似度**（`titleSimilarity()`）：**用 LCS（最長共同子序列）為基礎的 Dice 係數**（`2 × LCS長度 / 兩字串長度總和`），不是編輯距離（Levenshtein）。這是實作時發現的必要選擇：文化快遞常把場館名當標題前綴（例如「北美館 - 共感：存在的節奏」對應文化部/北美館那邊單純的「共感：存在的節奏」），這種「整段前綴」在編輯距離下會被當成一長串插入成本，把相似度拉到 0.8 門檻以下（實測只有 0.7），但這明顯是同一檔展覽；改用 LCS 為基礎的比率（分母是「兩邊長度總和」而不是「較長字串長度」），前綴差異的影響小很多，這組算出來是 0.82，貼近分析階段用 Python `difflib.SequenceMatcher.ratio()` 算出的數字，同時仍然正確排除「大稻埕戲苑【請戲–布袋戲一條街】特展」vs「【特展】「請戲-布袋戲一條街」特展」這種措辭差異較大、不該視為同一筆的案例（算出來 0.71，低於門檻）。
+
+**北美館「共感」「調」這 2 筆的特殊處理**（見整合方案討論的邊界案例）：去重比對範圍**也涵蓋 `data/tfam-overrides.json` 產生的北美館事件**，不是只比對文化部 344 筆。文化快遞裡「北美館 - 共感：存在的節奏」「北美館 -調：心境與聲景之間」這 2 筆場地/標題都對應到 `tfam-overrides.json` 裡已手動維護的展覽，蓋掉規則一樣適用（文化快遞版本有圖片）。**`tfam-overrides.json` 檔案本身這 2 筆不刪**，只是 build 出來的 `events.json` 不會再包含它們的 tfam 版本，改用文化快遞版本；`tfam-overrides.json` 裡另外 2 筆（鬱卒的平面、王雅慧：旅行者）目前不在文化快遞 82 筆展覽裡，繼續用人工版本。
+
+驗證結果（`node scripts/build-events.mjs`，輸入不變）：
+
+```
+已從 sample.json（344 筆，去重後 321 筆）+ 北美館（4 筆，去重後 2 筆）
++ 文化快遞（82 筆，取代了文化部 23 筆、北美館 2 筆）產生 events.json（405 筆）
+```
+
+文化部去重後剩 321（不是 344−22=322）、取代筆數顯示 23（不是 22）：差 1 筆是因為 `sample.json` 本身有 4 組標題完全重複的資料（見 4 節已知風險，`從前從前－繪說童話郵票特展` 是其中一組），文化快遞的「從前從前」比對到其中一筆重複項目時只會移除那一筆，另一筆同標題的舊資料還留著——這是文化部原始資料本身的既有重複問題（沒有在這次一併處理，超出這次整合的範圍），不是這次去重邏輯的 bug。
+
+### 10.5 已知的資料品質問題
+
+- `ImageFile` 是 `cultureexpress.taipei/UploadPlugin?file=...` 這種轉址/代理連結，不是原始圖檔網址，先照使用者的方案原封不動使用、之後看實際顯示效果如何再決定要不要處理。
+- `Introduction` 欄位常含 `\r\n`，已用既有的 `shortDescription()` 一併消毒。
+- 目前只納入 `Category === "展覽"`；「講座」「表演藝術」「音樂現場」等其他 8 種類別的資料還沒有評估是否要一併收錄，是之後可以考慮的擴充方向。
+- `data/culture-express-raw.json` 是一次性快照（使用者手動貼資料當下的內容），還沒有接上真正的抓取流程（跟 `tfam-raw.json` 狀態相同，見第 9 節的多資料來源自動化管線）。
