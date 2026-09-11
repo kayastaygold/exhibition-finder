@@ -309,3 +309,57 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 - [ ] `category=all` 或其他 category 是否會出現 `showInfo` 陣列長度 > 1 的巡迴展案例
 - [ ] 跨日重新抓取後 `UID` 是否穩定不變
 - [ ] `endDate < today` 的過期活動實際佔比
+
+---
+
+## 8. 多資料來源架構（規劃中，見 issue 討論）
+
+> ⚠️ 章節編號待確認：本節是在 `main` 尚未合併「加入北美館（TFAM）資料源」PR 時開的分支上寫的，那個 PR 合併後會多一個「## 8. 北美館（TFAM）資料源整合」章節，屆時本節要重新編號成「## 9.」，並把上面 §8 的內容視為 §8、本節變成 §9。先在這裡註記，合併時處理。
+
+未來計畫加入更多展覽資料來源（北美館、臺北市當代藝術館、新北市美術館、各藝廊等），需要把現有「一支腳本讀一份固定樣本」的做法，改成可以掛多個來源的架構。分三步做，這裡先做第一步。
+
+### 8.1 來源設定檔（`data/sources.json`）
+
+新增 `data/sources.json`，每個來源一個物件：
+
+| 欄位 | 說明 |
+|---|---|
+| `id` | 唯一識別碼，之後串接抓取/合併邏輯時當 key 用 |
+| `name` | 顯示名稱，給人看的 |
+| `type` | `"official_api"`（政府/機構官方開放資料 API）或 `"scrape"`（沒有 API、要爬官網頁面），目前兩個來源都是 `official_api` |
+| `url` | API 端點或網站網址 |
+| `enabled` | `true`/`false`，之後要暫停某個來源（例如 API 掛了、資料品質有問題）不用刪設定，關掉就好 |
+| `location` | 固定館址資訊（`location`/`locationName`/`latitude`/`longitude`），像北美館這種「全部展覽都在同一個地點」的來源才有值；文化部這種每筆活動自己帶地點的來源是 `null` |
+| `requiresReview` | 布林值，**先只加欄位、邏輯還沒做**（見 8.3）。這次先設 `false`——之後加藝廊這種來源可信度較低的資料時，才會用這個欄位決定要不要先過 PR 審核再進 `main`，而不是像現在這樣直接被排程自動 commit |
+
+目前已知的兩個來源：
+
+```json
+[
+  {
+    "id": "moc-exhibitions",
+    "name": "文化部展覽資訊（category=6）",
+    "type": "official_api",
+    "url": "https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFindTypeJ&category=6",
+    "enabled": true,
+    "location": null,
+    "requiresReview": false
+  },
+  {
+    "id": "tfam",
+    "name": "臺北市立美術館（data.taipei）",
+    "type": "official_api",
+    "url": "https://data.taipei/api/v1/dataset/1700a7e6-3d27-47f9-89d9-1811c9f7489c?scope=resourceAquire",
+    "enabled": true,
+    "location": {
+      "location": "臺北市中山區中山北路三段181號",
+      "locationName": "臺北市立美術館",
+      "latitude": 25.072656,
+      "longitude": 121.524559
+    },
+    "requiresReview": false
+  }
+]
+```
+
+**這一步刻意只做設定檔本身，沒有把它接進 `build-events.mjs`。** `build-events.mjs` 目前處理文化部跟北美館兩個來源的方式（`inputPath`／`TFAM_RAW_PATH`／`TFAM_OVERRIDES_PATH` 這幾個寫死的路徑）還沒有改成讀這個設定檔——那是之後要不要做、怎麼做的另一個決定（例如：`enabled: false` 要在腳本裡實際生效，勢必要改 `build-events.mjs` 去讀這份設定檔而不是寫死路徑），先把設定檔的形狀定下來、確認沒問題，再決定要不要動 `build-events.mjs`。
