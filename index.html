@@ -152,6 +152,15 @@
       return eventStart <= queryEnd && eventEnd >= queryStart;
     }
 
+    // 已結束（endDate < 今天）的展覽一律不顯示，不管選哪個時間篩選（含「全部」跟
+    // 落在過去的自訂區間）。endDate 當天仍算進行中。endDate 解析不出來的不排除——
+    // 無法判斷的資料寧可留著，不默默藏掉（目前資料裡沒有這種情況）。
+    function hasNotEnded(event, today) {
+      const eventEnd = parseDate(event.endDate ?? "");
+      if (Number.isNaN(eventEnd.getTime())) return true;
+      return eventEnd >= today;
+    }
+
     // 縣市／行政區篩選在場次（showInfo）層級判斷「任一場次符合」（見 schema.md 第 3 節）。
     // 縣市跟行政區要求同一個場次同時符合，不是分別在不同場次上各自符合——
     // 不然像「東區」這種在多個縣市都有的行政區名稱，會誤配到別的縣市去。
@@ -280,12 +289,16 @@
       statusEl.textContent = "";
 
       const range = getDateRange(dateMode, customStart, customEnd);
-      // 先套用縣市＋行政區＋時間篩選（跟常設展/線上展與否無關），再依「包含常設展」
+      const today = startOfDay(new Date());
+      // 先排除已結束的展覽，再套用縣市＋行政區＋時間篩選（跟常設展/線上展與否無關），再依「包含常設展」
       // 「包含線上展覽」決定要不要把它們也列進來——這樣才能同時算出「顯示中」跟
       // 「被藏起來」的筆數。常設展跟線上展覽是各自獨立算的，不是互斥分類：
       // 一檔展覽可能同時符合兩者（例如常設的線上展），會同時被算進兩個隱藏數字裡。
       const matched = events.filter(
-        (e) => matchesLocation(e, county, district) && matchesDateRange(e, range)
+        (e) =>
+          hasNotEnded(e, today) &&
+          matchesLocation(e, county, district) &&
+          matchesDateRange(e, range)
       );
       const displayed = matched.filter(
         (e) => (includePermanent || !e.isPermanent) && (includeOnline || !e.isOnline)
