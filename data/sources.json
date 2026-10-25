@@ -17,7 +17,7 @@
     "url": "https://data.taipei/api/v1/dataset/1700a7e6-3d27-47f9-89d9-1811c9f7489c?scope=resourceAquire",
     "rawPath": "data/tfam-raw.json",
     "responseFormat": "data-taipei",
-    "enabled": true,
+    "enabled": false,
     "location": {
       "location": "臺北市中山區中山北路三段181號",
       "locationName": "臺北市立美術館",

@@ -12,12 +12,14 @@
 // 原始回傳寫進下面這幾個 raw 檔（抓取失敗就保留上一次的檔案），這支腳本只讀 raw 檔，
 // 所以本機沒有網路也能 build。見 schema.md 第 9.3 節。
 //
-// 北美館資料源固定讀 data/tfam-raw.json（data.taipei API 回傳裡的 results 陣列，
-// 選用——這個檔案不存在也沒關係，見下方 loadTfamEvents() 的說明）跟
-// data/tfam-overrides.json（人工補值，必要）。
-//
 // 文化快遞資料源固定讀 data/culture-express-raw.json（cultureexpress.taipei
 // C000003 端點的原始回傳，選用——不存在就跳過，見下方 loadCultureExpressEvents()）。
+// 北美館的展覽也從這裡來（見 schema.md 8.6）。
+//
+// data/tfam-overrides.json 是北美館的人工修正（選用）：可以修正某筆文化快遞事件的
+// 地點，或新增文化快遞沒有的北美館展覽，見下方 loadTfamOverrides()。
+// data.taipei 的北美館資料集（data/tfam-raw.json）已停用，讀取的程式碼保留，
+// 檔案不存在也沒關係，見下方 loadTfamEvents()。
 
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -245,24 +247,31 @@ function stableSlug(str) {
   return (hash >>> 0).toString(36);
 }
 
-// 讀取 data.taipei 的原始 TFAM 展覽資料（如果檔案存在）跟人工 override
-// （data/tfam-overrides.json，必要），合併成跟 buildEvent() 輸出一樣的事件物件陣列。
-//
-// tfam-raw.json 目前還沒有抓取流程（見檔案開頭的說明），所以刻意設計成
-// 「檔案不存在就當作空陣列」而不是拋錯——這樣 overrides 裡的每一筆還是會照樣
-// 產生事件（只是 description/showUnit 會是空字串，因為沒有 raw 資料可以補），
-// 之後接上真正的抓取流程也不用改這支腳本。
-async function loadTfamEvents() {
-  let overrides;
+// data/tfam-overrides.json 有兩種 override（見 schema.md 8.6）：
+//   - 沒有 cultureExpressId：自己產生一筆完整的事件，給「文化快遞沒有的北美館展覽」用，
+//     由 loadTfamEvents() 處理。
+//   - 有 cultureExpressId：不產生事件，而是修正那筆文化快遞事件的地點欄位，
+//     由 applyCultureExpressOverrides() 處理。
+async function loadTfamOverrides() {
   try {
-    overrides = JSON.parse(await readFile(TFAM_OVERRIDES_PATH, "utf-8"));
+    return JSON.parse(await readFile(TFAM_OVERRIDES_PATH, "utf-8"));
   } catch (err) {
     if (err.code === "ENOENT") {
-      console.log(`${TFAM_OVERRIDES_PATH} 不存在，略過北美館資料`);
+      console.log(`${TFAM_OVERRIDES_PATH} 不存在，略過北美館 override`);
       return [];
     }
     throw err;
   }
+}
+
+// 把「自己產生事件」的那種 override 跟 data.taipei 的原始資料（如果檔案存在）合併，
+// 產生跟 buildEvent() 輸出一樣的事件物件陣列。
+//
+// data.taipei 來源已停用（sources.json 的 enabled: false，見 schema.md 8.6），
+// tfam-raw.json 也已經從 repo 刪掉，但讀取的程式碼保留：檔案不存在就當作空陣列，
+// override 照樣產生事件，只是 description/showUnit 是空字串。
+async function loadTfamEvents(overrides) {
+  if (overrides.length === 0) return [];
 
   let rawByTitle = new Map();
   try {
@@ -395,23 +404,50 @@ function longestCommonSubsequenceLength(a, b) {
   return prev[n];
 }
 
-// 標題相似度：2 * LCS長度 / (兩字串長度總和)，範圍 0~1，兩邊都是空字串視為相同（1）。
-// 這個公式（Dice 係數）刻意選來貼近分析階段用 Python difflib.SequenceMatcher.ratio()
-// 算出來的數字，而不是用編輯距離（Levenshtein）——實測編輯距離版本會誤判「加了場館
-// 前綴」的狀況：文化快遞常把場館名當標題前綴（例如「北美館 - 共感：存在的節奏」對應
-// 文化部/北美館那邊單純的「共感：存在的節奏」），這種「整段前綴」在編輯距離下會被
-// 當成一長串插入成本，把相似度拉到 0.8 門檻以下；但用 LCS 為基礎的比率，因為分母是
-// 「兩邊長度總和」而不是「較長字串長度」，這種前綴差異影響小很多，「共感：存在的節奏」
-// 這組算出來是 0.82，跟分析階段的數字一致，門檻抓 > 0.8 也一樣能排除掉
+// 單純比對兩個標題字串：2 * LCS長度 / (兩字串長度總和)，範圍 0~1，兩邊都是空字串
+// 視為相同（1）。這個公式（Dice 係數）刻意選來貼近分析階段用 Python
+// difflib.SequenceMatcher.ratio() 算出來的數字。門檻抓 > 0.8 能排除
 // 「大稻埕戲苑【請戲–布袋戲一條街】特展」vs「【特展】「請戲-布袋戲一條街」特展」
-// 這種措辭差異較大、不該視為同一筆的案例（算出來 0.71，低於門檻）。
-function titleSimilarity(a, b) {
+// 這種措辭差異較大、不該視為同一筆的案例（算出來 0.71）。
+//
+// 它對「場館名前綴」只有部分抵抗力：前綴相對於標題越短影響越小，長標題沒問題
+// （「北美館 - 共感：存在的節奏」vs「共感：存在的節奏」= 0.82），但短標題會被前綴
+// 拉到門檻以下（「北美館 - 王雅慧：旅行者」vs「王雅慧：旅行者」剛好 0.80，沒超過）。
+// 所以實際比對用的是下面的 titleSimilarity()，先處理前綴再呼叫這個函式。
+function rawTitleSimilarity(a, b) {
   const normA = normalizeForCompare(a);
   const normB = normalizeForCompare(b);
   const totalLen = normA.length + normB.length;
   if (totalLen === 0) return 1;
   const lcsLen = longestCommonSubsequenceLength(normA, normB);
   return (2 * lcsLen) / totalLen;
+}
+
+// 「場館名 - 」這類前綴：開頭 1~10 個字（不含空白與破折號），接著破折號，而且破折號
+// **前後至少有一個空白**。文化快遞的「北美館 - 王雅慧：旅行者」「北美館 -調：…」
+// 「北美館 -  2026臺北美術獎」都符合；要求空白是為了不把副標題的分隔誤當成前綴——
+// 「古蹟探祕—勸業銀行舊廈…」「Oh!海郵-海洋生物郵票特展」「臺灣當代雕塑展《恆形—…》」
+// 這些破折號前後都沒有空白，不會被去掉。見 schema.md 10.4。
+const VENUE_PREFIX_PATTERN = /^\s*[^\s\-－—｜|]{1,10}(?:\s+[-－—]+\s*|\s*[-－—]+\s+)/;
+
+function stripVenuePrefix(title) {
+  const stripped = (title ?? "").replace(VENUE_PREFIX_PATTERN, "");
+  return stripped.trim() === "" ? title : stripped;
+}
+
+// 實際用來去重的標題相似度：原標題、去前綴後的標題兩兩組合，取最高分。
+// 取最大值只會「多配對到」、不會讓原本配對得到的變成配對不到，再加上 isSameExhibition()
+// 還要求場地相同，去掉前綴後標題變短也不會跨場館誤配。用 9/11 快照跟 10/25 抓取
+// 的資料驗證過：原本的配對一組都沒少，只多了「王雅慧：旅行者」這組該配對的。
+function titleSimilarity(a, b) {
+  const strippedA = stripVenuePrefix(a);
+  const strippedB = stripVenuePrefix(b);
+  return Math.max(
+    rawTitleSimilarity(a, b),
+    rawTitleSimilarity(strippedA, strippedB),
+    rawTitleSimilarity(strippedA, b),
+    rawTitleSimilarity(a, strippedB)
+  );
 }
 
 // 場地是否相同：把兩個事件物件（buildEvent()/loadTfamEvents()/
@@ -440,8 +476,8 @@ function venuesMatch(eventA, eventB) {
   return false;
 }
 
-// 是否為同一檔展覽：場地要相同，且標題相似度 > 0.8（見 titleSimilarity() 的
-// 演算法選擇說明）。這是您在分析階段確認的去重標準。
+// 是否為同一檔展覽：場地要相同，且標題相似度 > 0.8（見 rawTitleSimilarity()／
+// titleSimilarity() 的說明）。去重標準見 schema.md 10.4。
 function isSameExhibition(eventA, eventB) {
   if (!venuesMatch(eventA, eventB)) return false;
   return titleSimilarity(eventA.title, eventB.title) > 0.8;
@@ -529,6 +565,58 @@ async function loadCultureExpressEvents() {
   return deduped.map(buildCultureExpressEvent);
 }
 
+// 台灣時間的「今天」（UTC 午夜表示，跟 parseDate() 的回傳值可以直接比較）。
+// 排程在 UTC 週一 00:00 跑，runner 本身是 UTC，所以要明確換算成 UTC+8。
+function taiwanToday() {
+  const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function warn(title, message) {
+  console.warn(`⚠️ ${message}`);
+  if (process.env.GITHUB_ACTIONS) console.log(`::warning title=${title}::${message}`);
+}
+
+// 用 cultureExpressId 綁定文化快遞事件，修正它的地點欄位（location／locationName／
+// latitude／longitude，override 有寫哪個欄位就改哪個），county/district 依修正後的
+// location 重新計算。圖片、簡介、展期都沿用文化快遞版本。
+//
+// 用 ID 而不用標題綁定：「鬱卒的平面」兩邊標題的前後順序相反，標題比對對不起來；
+// 文化快遞的 ID 在 9/11 跟 10/25 兩次抓取之間，同一標題 108 筆裡 106 筆沒變。
+//
+// ID 對不到時：override 的 endDate 已經過了就安靜略過（展覽結束後被下架是正常的）；
+// 還沒結束、或 override 沒寫 endDate（無法判斷，保守起見當作還沒結束）才發 ::warning::。
+// 兩種情況都不會讓 build 失敗。
+function applyCultureExpressOverrides(ceEvents, overrides) {
+  const byUid = new Map(ceEvents.map((e) => [e.uid, e]));
+  const today = taiwanToday();
+
+  for (const override of overrides) {
+    const event = byUid.get(`ce-${override.cultureExpressId}`);
+    if (!event) {
+      const end = parseDate(override.endDate);
+      if (end && end < today) continue;
+      const why = end ? "展期還沒結束" : "override 沒寫 endDate，無法判斷是否已結束";
+      warn(
+        "北美館 override 對不到文化快遞資料",
+        `${TFAM_OVERRIDES_PATH} 的「${override.title}」綁定的文化快遞 ID ${override.cultureExpressId} ` +
+          `這次的資料裡找不到（${why}），這筆 override 略過，請檢查 ID 是否變了`
+      );
+      continue;
+    }
+
+    for (const s of event.showInfo) {
+      if ("location" in override) s.location = override.location ?? "";
+      if ("locationName" in override) s.locationName = override.locationName ?? "";
+      if ("latitude" in override) s.latitude = normalizeCoord(override.latitude, -90, 90);
+      if ("longitude" in override) s.longitude = normalizeCoord(override.longitude, -180, 180);
+      s.county = extractCounty(s.location);
+      s.district = extractDistrict(s.location);
+    }
+    console.log(`北美館 override 已套用到文化快遞「${event.title}」（${override.cultureExpressId}）`);
+  }
+}
+
 async function main() {
   const raw = JSON.parse(await readFile(inputPath, "utf-8"));
   if (!Array.isArray(raw)) {
@@ -536,13 +624,16 @@ async function main() {
   }
 
   const cultureEvents = raw.map(buildEvent);
-  const tfamEvents = await loadTfamEvents();
+  const tfamOverrides = await loadTfamOverrides();
+  const tfamEvents = await loadTfamEvents(tfamOverrides.filter((o) => !o.cultureExpressId));
   const ceEvents = await loadCultureExpressEvents();
+  // 先修正文化快遞事件的地點，再去重，這樣去重比對用的是修正後的場地。
+  applyCultureExpressOverrides(ceEvents, tfamOverrides.filter((o) => o.cultureExpressId));
 
   // 文化快遞資料跟文化部/北美館重疊時（同一檔展覽，標題相似度 > 0.8 且場地相同），
   // 保留文化快遞版本（有圖片，資料品質較好），從對應的來源陣列移除被取代的那筆。
-  // tfam-overrides.json 本身不刪這兩筆——只是 build 出來的 events.json 不會再包含
-  // 它們的 tfam 版本，改用文化快遞版本。見整合方案討論。
+  // 北美館的主要來源已經改成文化快遞（見 schema.md 8.6），這裡比對北美館 override
+  // 是防止之後有人加了一筆文化快遞其實也有的 override，造成重複。
   let remainingCultureEvents = [...cultureEvents];
   let remainingTfamEvents = [...tfamEvents];
   let mocReplacedCount = 0;
