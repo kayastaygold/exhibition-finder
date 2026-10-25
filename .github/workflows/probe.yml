@@ -1,0 +1,269 @@
+name: Probe regional sources (temporary)
+
+# 一次性的探測 workflow：找出桃園／台中／高雄候選資料集的實際 API 端點，抓一次並在
+# log 和 Job Summary 回報「連不連得上、筆數、欄位、最新日期、有沒有中美館／高美館」。
+#
+# - 只能手動觸發（workflow_dispatch），沒有排程。
+# - 只讀不寫：permissions 只有 contents: read，不會 commit 任何東西，
+#   也完全不碰 fetch-sources.mjs／build-events.mjs／events.json 這條正式管線。
+# - 探測結束後這個檔案會刪掉。
+#
+# 這個 sandbox 連不上 data.gov.tw／datacenter.taichung.gov.tw／*.kcg.gov.tw，
+# WebSearch 也找不到具體端點，所以分兩階段在 runner 上做：
+#   1. 從 data.gov.tw 資料集頁面、詮釋資料 API、Swagger 文件裡把候選網址挖出來
+#   2. 逐一抓取候選網址、解析內容
+"on":
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Probe
+        run: |
+          cat > probe.mjs <<'EOF'
+          const SOURCES = [
+            {
+              id: "taichung-events",
+              name: "臺中市政府全球資訊網活動訊息",
+              datagov: 84940,
+              swagger: [
+                "https://datacenter.taichung.gov.tw/swagger/yaml/387430000A",
+                "https://datacenter.taichung.gov.tw/swagger/yaml/387410000A",
+              ],
+              keywords: /活動/,
+            },
+            {
+              id: "kaohsiung-exhibitions",
+              name: "高雄市政府文化局-展覽活動",
+              datagov: 47220,
+              swagger: [],
+              keywords: /展覽|展演|活動/,
+            },
+            {
+              id: "huludun",
+              name: "臺中市葫蘆墩文化中心活動表",
+              datagov: 83928,
+              swagger: [],
+              keywords: /葫蘆墩/,
+            },
+          ];
+
+          const MUSEUMS = {
+            中美館: /中美館|臺中市立美術館|台中市立美術館|綠美圖/,
+            國美館: /國美館|國立臺灣美術館|國立台灣美術館/,
+            高美館: /高美館|高雄市立美術館|內惟藝術中心|高雄兒童美術館/,
+            桃美館: /桃美館|桃園市立美術館|橫山書法藝術館|桃園市兒童美術館/,
+          };
+
+          const MAX_CANDIDATES = 10;
+          const summary = [];
+          const say = (s = "") => { console.log(s); summary.push(s); };
+
+          async function get(url) {
+            const t0 = Date.now();
+            try {
+              const res = await fetch(url, {
+                headers: { "User-Agent": "exhibition-finder-probe", Accept: "*/*" },
+                signal: AbortSignal.timeout(30000),
+                redirect: "follow",
+              });
+              const text = await res.text();
+              return { ok: res.ok, status: res.status, type: res.headers.get("content-type") ?? "", text, finalUrl: res.url, ms: Date.now() - t0 };
+            } catch (err) {
+              return { ok: false, status: 0, type: "", text: "", error: `${err.name}: ${err.cause?.code ?? err.message}`, ms: Date.now() - t0 };
+            }
+          }
+
+          const fmt = (r) => r.status ? `HTTP ${r.status}, ${r.type || "?"}, ${r.text.length} bytes, ${r.ms}ms` : `連線失敗（${r.error}）, ${r.ms}ms`;
+
+          function extractUrls(text) {
+            const urls = new Set();
+            for (const m of text.matchAll(/https?:\\?\/\\?\/[^\s"'<>\\)]+/g)) {
+              urls.add(m[0].replace(/\\\//g, "/").replace(/[.,;]+$/, ""));
+            }
+            return [...urls];
+          }
+
+          function looksLikeData(u) {
+            if (/\.(png|jpe?g|gif|svg|css|js|ico|woff2?)(\?|$)/i.test(u)) return false;
+            if (/data\.gov\.tw\/(dataset|datasets|license|about|instruction|en\/)/i.test(u)) return false;
+            return /OpenData|\/api\/|\.json|\.csv|\.xml|download|swagger|kcg\.gov\.tw|taichung\.gov\.tw/i.test(u);
+          }
+
+          // 簡單掃 swagger yaml：抓 path 跟它底下的 summary/description，挑出符合關鍵字的
+          function scanSwagger(text, keywords) {
+            const lines = text.split(/\r?\n/);
+            const server = (text.match(/^\s*-\s*url:\s*['"]?(\S+?)['"]?\s*$/m) ?? [])[1]
+              ?? ((text.match(/^host:\s*(\S+)/m) ?? [])[1] ? `https://${text.match(/^host:\s*(\S+)/m)[1]}${(text.match(/^basePath:\s*(\S+)/m) ?? [, ""])[1]}` : "");
+            const paths = [];
+            let cur = null;
+            for (const line of lines) {
+              const p = line.match(/^ {2}(\/\S*):\s*$/);
+              if (p) { cur = { path: p[1], text: "" }; paths.push(cur); continue; }
+              if (cur && /^\s+(summary|description|title):/.test(line)) cur.text += " " + line.trim();
+            }
+            const hits = paths.filter((p) => keywords.test(p.text) || keywords.test(p.path));
+            return { server, total: paths.length, hits };
+          }
+
+          function findRecords(data, path = "$", depth = 0) {
+            if (Array.isArray(data)) {
+              if (data.length && typeof data[0] === "object" && data[0] !== null) return { records: data, path };
+              return { records: data, path };
+            }
+            if (data && typeof data === "object" && depth < 4) {
+              let best = null;
+              for (const [k, v] of Object.entries(data)) {
+                const r = findRecords(v, `${path}.${k}`, depth + 1);
+                if (r && Array.isArray(r.records) && (!best || r.records.length > best.records.length)) best = r;
+              }
+              return best;
+            }
+            return null;
+          }
+
+          function parseDate(v) {
+            if (typeof v !== "string" && typeof v !== "number") return null;
+            const s = String(v).trim();
+            let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+            if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+            m = s.match(/^(20\d{2})(\d{2})(\d{2})(\d{0,6})$/);
+            if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+            m = s.match(/^(1\d{2})[-/.](\d{1,2})[-/.](\d{1,2})/); // 民國年
+            if (m) return `${Number(m[1]) + 1911}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+            return null;
+          }
+
+          function analyzeRecords(records) {
+            const objs = records.filter((r) => r && typeof r === "object");
+            const fields = [...new Set(objs.slice(0, 20).flatMap((r) => Object.keys(r)))];
+            const latestByField = {};
+            for (const r of objs) {
+              for (const [k, v] of Object.entries(r)) {
+                const d = parseDate(v);
+                if (d && d >= "1990" && d <= "2100" && (!latestByField[k] || d > latestByField[k])) latestByField[k] = d;
+              }
+            }
+            const museums = {};
+            for (const [name, rx] of Object.entries(MUSEUMS)) {
+              const hits = objs.filter((r) => rx.test(JSON.stringify(r)));
+              if (hits.length) {
+                const titleKey = fields.find((f) => /title|name|名稱|標題|活動/i.test(f));
+                museums[name] = { count: hits.length, samples: hits.slice(0, 5).map((r) => String(titleKey ? r[titleKey] : JSON.stringify(r)).slice(0, 80)) };
+              }
+            }
+            return { count: records.length, fields, latestByField, museums, sample: JSON.stringify(objs[0] ?? records[0]).slice(0, 700) };
+          }
+
+          function parseCsv(text) {
+            const lines = text.replace(/^﻿/, "").split(/\r?\n/).filter((l) => l.trim());
+            if (lines.length < 1) return [];
+            const header = lines[0].split(",").map((h) => h.replace(/^"|"$/g, "").trim());
+            return lines.slice(1).map((l) => {
+              const cells = l.split(",");
+              return Object.fromEntries(header.map((h, i) => [h, (cells[i] ?? "").replace(/^"|"$/g, "")]));
+            });
+          }
+
+          async function probeData(url) {
+            const r = await get(url);
+            say(`    - ${url}`);
+            say(`      ${fmt(r)}`);
+            if (!r.ok) {
+              if (r.text) say(`      回應開頭：${JSON.stringify(r.text.slice(0, 200))}`);
+              return null;
+            }
+            let records = null, where = "";
+            try {
+              const data = JSON.parse(r.text);
+              const found = findRecords(data);
+              if (found) { records = found.records; where = `JSON ${found.path}`; }
+              else say(`      JSON，但找不到陣列；頂層鍵：${Object.keys(data ?? {}).join("、")}`);
+            } catch {
+              if (/csv/i.test(r.type) || /\.csv(\?|$)/i.test(url)) { records = parseCsv(r.text); where = "CSV"; }
+              else if (/<\?xml|<[A-Za-z]/.test(r.text.slice(0, 200))) {
+                say(`      XML/HTML，前 300 字：${JSON.stringify(r.text.slice(0, 300))}`);
+                return null;
+              } else {
+                say(`      無法解析，前 200 字：${JSON.stringify(r.text.slice(0, 200))}`);
+                return null;
+              }
+            }
+            if (!records) return null;
+            const a = analyzeRecords(records);
+            say(`      ✅ ${where}：${a.count} 筆`);
+            say(`      欄位：${a.fields.join("、")}`);
+            const latest = Object.entries(a.latestByField).sort((x, y) => (x[1] < y[1] ? 1 : -1));
+            say(`      各日期欄位的最大值：${latest.map(([k, v]) => `${k}=${v}`).join("、") || "（找不到日期欄位）"}`);
+            for (const [name, m] of Object.entries(a.museums)) say(`      🏛️ ${name}：${m.count} 筆，例：${m.samples.join("／")}`);
+            if (!Object.keys(a.museums).length) say(`      🏛️ 中美館／國美館／高美館／桃美館：都沒有`);
+            say(`      第一筆：${a.sample}`);
+            return a;
+          }
+
+          for (const src of SOURCES) {
+            say(`\n## ${src.name}（data.gov.tw/dataset/${src.datagov}）`);
+            const candidates = new Set();
+
+            say(`  [1] 從 data.gov.tw 找端點`);
+            for (const metaUrl of [
+              `https://data.gov.tw/api/v2/rest/dataset/${src.datagov}`,
+              `https://data.gov.tw/api/v1/rest/dataset/${src.datagov}`,
+              `https://data.gov.tw/dataset/${src.datagov}`,
+            ]) {
+              const r = await get(metaUrl);
+              say(`    - ${metaUrl}：${fmt(r)}`);
+              if (!r.ok) continue;
+              try {
+                const j = JSON.parse(r.text);
+                say(`      JSON 頂層鍵：${Object.keys(j).join("、")}`);
+                const s = JSON.stringify(j);
+                say(`      內容前 1200 字：${s.slice(0, 1200)}`);
+              } catch {}
+              const urls = extractUrls(r.text).filter(looksLikeData);
+              say(`      挖到 ${urls.length} 個候選網址${urls.length ? "：" : ""}`);
+              for (const u of urls.slice(0, 20)) { say(`        · ${u}`); candidates.add(u); }
+            }
+
+            const swaggerUrls = [...src.swagger, ...[...candidates].filter((u) => /swagger\/(yaml|api-docs)|testapi|od1/i.test(u))];
+            if (swaggerUrls.length) say(`  [2] 掃 Swagger／API 文件`);
+            for (const sw of [...new Set(swaggerUrls)]) {
+              const r = await get(sw);
+              say(`    - ${sw}：${fmt(r)}`);
+              if (!r.ok) continue;
+              const scan = scanSwagger(r.text, src.keywords);
+              say(`      server=${scan.server || "?"}，共 ${scan.total} 個 path，符合關鍵字 ${scan.hits.length} 個`);
+              for (const h of scan.hits.slice(0, 15)) {
+                say(`        · ${h.path} —${h.text.slice(0, 160)}`);
+                const base = scan.server || new URL(sw).origin;
+                candidates.add(h.path.startsWith("http") ? h.path : `${base.replace(/\/$/, "")}${h.path}`);
+              }
+              if (!scan.total) say(`      前 500 字：${JSON.stringify(r.text.slice(0, 500))}`);
+            }
+
+            const dataUrls = [...candidates].filter((u) => !/swagger\/(yaml|api-docs)|\/od1|\.ya?ml(\?|$)/i.test(u));
+            say(`  [3] 抓資料（候選 ${dataUrls.length} 個，最多試 ${MAX_CANDIDATES} 個）`);
+            let anyOk = false;
+            for (const u of dataUrls.slice(0, MAX_CANDIDATES)) {
+              const a = await probeData(u);
+              if (a) anyOk = true;
+            }
+            if (!anyOk) say(`  ⚠️ 這個來源沒有抓到任何可解析的資料`);
+          }
+
+          if (process.env.GITHUB_STEP_SUMMARY) {
+            const { appendFileSync } = await import("node:fs");
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, "```\n" + summary.join("\n") + "\n```\n");
+          }
+          EOF
+          node probe.mjs
