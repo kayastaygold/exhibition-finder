@@ -1,0 +1,57 @@
+name: Probe (manual, read-only)
+
+# 通用的探測 workflow：在 GitHub runner 上跑一支一次性的探測腳本，用來查證
+# 這個開發環境（sandbox）連不到的外部網站／API——能不能連、回什麼格式、
+# robots.txt 怎麼寫等等。用法見 probes/README.md。
+#
+# 為什麼要這支 workflow 一直留在 main 上：workflow_dispatch 規定 workflow 檔
+# 必須存在於預設分支才能觸發；只要它在 main 上，之後就能用「指定分支」的方式
+# 觸發，執行的是那個分支上的腳本，不需要每次探測都開 PR、merge。
+#
+# - 只能手動觸發（workflow_dispatch），沒有排程。
+# - 只讀：permissions 只有 contents: read，checkout 也不保留憑證，
+#   沒有用到任何 secrets，不會 commit／push 任何東西。
+# - 不碰正式資料管線（fetch-sources.mjs／build-events.mjs／events.json）。
+"on":
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "要執行的探測腳本（必須是 probes/ 底下的 .mjs，例如 probes/museums.mjs）"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # 腳本路徑走環境變數、不直接內插進 shell，避免輸入值被當成指令執行；
+      # 並限制只能跑 probes/ 底下的 .mjs。
+      - name: Run probe script
+        env:
+          PROBE_SCRIPT: ${{ inputs.script }}
+        run: |
+          if ! printf '%s' "$PROBE_SCRIPT" | grep -Eq '^probes/[A-Za-z0-9._/-]+\.mjs$' \
+             || printf '%s' "$PROBE_SCRIPT" | grep -q '\.\.'; then
+            echo "::error::script 必須是 probes/ 底下的 .mjs 檔（收到：$PROBE_SCRIPT）"
+            exit 1
+          fi
+          if [ ! -f "$PROBE_SCRIPT" ]; then
+            echo "::error::分支 $GITHUB_REF_NAME 上沒有 $PROBE_SCRIPT"
+            exit 1
+          fi
+          echo "分支：$GITHUB_REF_NAME（$GITHUB_SHA）　腳本：$PROBE_SCRIPT"
+          node "$PROBE_SCRIPT"
