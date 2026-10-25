@@ -5,22 +5,23 @@
 //
 // 用法：
 //   node scripts/build-events.mjs [文化部輸入檔路徑] [輸出檔路徑]
-//   預設文化部輸入 ./sample.json，輸出 ./events.json
+//   預設文化部輸入 ./data/moc-raw.json，輸出 ./events.json
 //
 // 這支腳本只做「轉換」，不做「抓取」——抓取（呼叫 cloud.culture.tw、data.taipei、
-// cultureexpress.taipei）之後由 GitHub Actions 排程另外處理（見 schema.md 第 5 節），
-// 這裡先用本地的 sample.json 當輸入，之後把抓取結果換掉輸入檔即可,不用改這支腳本。
+// cultureexpress.taipei）由 scripts/fetch-sources.mjs 負責，它會把各來源最新的
+// 原始回傳寫進下面這幾個 raw 檔（抓取失敗就保留上一次的檔案），這支腳本只讀 raw 檔，
+// 所以本機沒有網路也能 build。見 schema.md 第 9.3 節。
 //
-// 北美館資料源固定讀 data/tfam-raw.json（data.taipei API 的原始回傳，選用——
-// 這個檔案還不存在也沒關係，見下方 loadTfamEvents() 的說明）跟
+// 北美館資料源固定讀 data/tfam-raw.json（data.taipei API 回傳裡的 results 陣列，
+// 選用——這個檔案不存在也沒關係，見下方 loadTfamEvents() 的說明）跟
 // data/tfam-overrides.json（人工補值，必要）。
 //
 // 文化快遞資料源固定讀 data/culture-express-raw.json（cultureexpress.taipei
-// C000003 端點的原始回傳快照，選用——不存在就跳過，見下方 loadCultureExpressEvents()）。
+// C000003 端點的原始回傳，選用——不存在就跳過，見下方 loadCultureExpressEvents()）。
 
 import { readFile, writeFile } from "node:fs/promises";
 
-const inputPath = process.argv[2] ?? "sample.json";
+const inputPath = process.argv[2] ?? "data/moc-raw.json";
 const outputPath = process.argv[3] ?? "events.json";
 const TFAM_RAW_PATH = "data/tfam-raw.json";
 const TFAM_OVERRIDES_PATH = "data/tfam-overrides.json";
@@ -68,7 +69,7 @@ const COUNTY_CANONICAL = {
 // 行政區（鄉/鎮/市/區）緊接在縣市名稱之後。用「非貪婪」比對，抽到第一個
 // 鄉/鎮/市/區字尾就停——如果貪婪比對，像「花蓮縣壽豐鄉市場1號」的行政區會被
 // 誤判成「壽豐鄉市」（把「市場」的「市」也吃進去），非貪婪才會正確停在「壽豐鄉」。
-// （這個陷阱是實際用 sample.json 驗證時抓到的，見 schema.md 4-14）
+// （這個陷阱是實際用 2026/09/07 的文化部樣本驗證時抓到的，見 schema.md 4-14）
 const DISTRICT_PATTERN = /^([一-鿿]{1,6}?[鄉鎮市區])/;
 
 // 找 location 字串裡「最後一次」出現的縣市名稱，回傳含比對位置的 match 物件或 null。
@@ -269,6 +270,12 @@ async function loadTfamEvents() {
     for (const r of raw) {
       rawByTitle.set(r.title, r);
     }
+    // data.taipei 的欄位名稱（title／內容／發布單位）還沒用真實回傳驗證過，
+    // 印出對到幾筆，對到 0 筆通常代表欄位名稱跟預期不同（見 schema.md 第 9.3 節）。
+    const matchedCount = overrides.filter((o) => rawByTitle.has(o.title)).length;
+    console.log(
+      `${TFAM_RAW_PATH}：${raw.length} 筆，其中 ${matchedCount}/${overrides.length} 筆 override 對得到`
+    );
   } catch (err) {
     if (err.code !== "ENOENT") throw err;
     console.log(`${TFAM_RAW_PATH} 不存在，北美館展覽的 description/showUnit 先留空`);
@@ -556,6 +563,12 @@ async function main() {
   }
 
   const events = [...remainingCultureEvents, ...remainingTfamEvents, ...ceEvents];
+
+  // 最後一道保險：合併出 0 筆一定是哪裡出錯了，直接失敗、不覆寫 events.json，
+  // 這樣排程就不會把空資料 commit 上 main（見 schema.md 第 9.3 節）。
+  if (events.length === 0) {
+    throw new Error(`合併後是 0 筆，不覆寫 ${outputPath}`);
+  }
 
   await writeFile(outputPath, JSON.stringify(events), "utf-8");
   console.log(
