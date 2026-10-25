@@ -1,6 +1,6 @@
 name: Probe museum sites (temporary)
 
-# 分支版本：第二輪美術館探測，腳本放在 probes/museums-r2.mjs。
+# 分支版本：美術館探測（第三輪起執行 probes/museums-r3.mjs）。
 # 只能手動觸發、只讀（contents: read），不碰正式資料管線。
 "on":
   workflow_dispatch: {}
@@ -24,4 +24,4 @@ jobs:
           node-version: "22"
 
       - name: Probe
-        run: node probes/museums-r2.mjs
+        run: node probes/museums-r3.mjs
