@@ -338,7 +338,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 `scripts/build-events.mjs` 新增 `loadTfamEvents()`：
 
 1. 讀 `data/tfam-overrides.json`（**必要**，人工整理的補值清單，每筆用 `title` 當比對 key）
-2. 讀 `data/tfam-raw.json`（**選用**——data.taipei API 的原始回傳，目前**還沒有抓取流程**，檔案不存在時當作空陣列，不會讓腳本壞掉）
+2. 讀 `data/tfam-raw.json`（**選用**——data.taipei API 的原始回傳，目前**還沒有抓取流程**，檔案不存在時當作空陣列，不會讓腳本壞掉）（**更新**：已在 9.3 由 `scripts/fetch-sources.mjs` 接上排程抓取。）
 3. 依 `title` 把兩邊合併：`description`／`showUnit` 從 raw 拿（沒有 raw 資料就是空字串）；`startDate`／`endDate`／`imageUrl`／`location`／`locationName`／`latitude`／`longitude` 一律從 override 拿
 4. `isOnline` 優先用 override 裡明講的值（`"isOnline" in override`），沒講才照一般標題關鍵字規則猜——這是因為 #2「TFAM Net.Open」標題沒有「線上」兩個字，一般規則抓不到，需要人工標記
 5. `isPermanent` 照一般規則算，不開放 override（目前沒有需要）
@@ -368,7 +368,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 ### 8.5 已知的資料品質問題
 
 - **卡片上的地點顯示文字對威尼斯這筆特例不夠精確**：目前顯示「📍 威尼斯雙年展台灣館（縣市未知）」——`(縣市未知)` 這個字眼原本是給「資料缺漏」用的（見 4-6 的 15 筆真缺地址資料），套在「故意設計成沒有台灣縣市」的這筆上語意不太精準，但不影響篩選邏輯正確性（不會被誤配到任何台灣縣市底下）。純粹是顯示文字可以再修飾的小地方，先如實記錄，**使用者已確認之後再改**。
-- **`tfam-raw.json`（data.taipei API 的原始回傳）還沒有抓取流程**，目前 4 筆事件的 `description`／`showUnit` 全部是空字串。已經用假資料驗證過合併邏輯本身沒問題，但要在正式資料裡看到真的簡介/發布單位文字，還需要之後接上實際抓取 data.taipei API 的步驟（見第 9 節的多資料來源自動化管線）。
+- **`tfam-raw.json`（data.taipei API 的原始回傳）還沒有抓取流程**，目前 4 筆事件的 `description`／`showUnit` 全部是空字串。已經用假資料驗證過合併邏輯本身沒問題，但要在正式資料裡看到真的簡介/發布單位文字，還需要之後接上實際抓取 data.taipei API 的步驟（見第 9 節的多資料來源自動化管線）。（**更新**：已在 9.3 由 `scripts/fetch-sources.mjs` 接上排程抓取。）
 
 ---
 
@@ -386,11 +386,13 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 | `name` | 顯示名稱，給人看的 |
 | `type` | `"official_api"`（政府/機構官方開放資料 API）或 `"scrape"`（沒有 API、要爬官網頁面），目前兩個來源都是 `official_api` |
 | `url` | API 端點或網站網址 |
+| `rawPath` | （9.3 新增）`fetch-sources.mjs` 把這個來源的原始回傳寫到哪個檔案，`build-events.mjs` 從同一個檔案讀 |
+| `responseFormat` | （9.3 新增）回應格式：`"array"`（直接回傳 JSON 陣列，文化部、文化快遞）或 `"data-taipei"`（`{ result: { count, results } }` 外層包裝，要分頁取 `results`，北美館） |
 | `enabled` | `true`/`false`，之後要暫停某個來源（例如 API 掛了、資料品質有問題）不用刪設定，關掉就好 |
 | `location` | 固定館址資訊（`location`/`locationName`/`latitude`/`longitude`），像北美館這種「全部展覽都在同一個地點」的來源才有值；文化部這種每筆活動自己帶地點的來源是 `null` |
 | `requiresReview` | 布林值，**先只加欄位、邏輯還沒做**（第三步，這次沒做）。這次先設 `false`——之後加藝廊這種來源可信度較低的資料時，才會用這個欄位決定要不要先過 PR 審核再進 `main`，而不是像現在這樣直接被排程自動 commit |
 
-目前已知的兩個來源：
+目前的三個來源（以 `data/sources.json` 實際內容為準）：
 
 ```json
 [
@@ -399,6 +401,8 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
     "name": "文化部展覽資訊（category=6）",
     "type": "official_api",
     "url": "https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFindTypeJ&category=6",
+    "rawPath": "data/moc-raw.json",
+    "responseFormat": "array",
     "enabled": true,
     "location": null,
     "requiresReview": false
@@ -408,6 +412,8 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
     "name": "臺北市立美術館（data.taipei）",
     "type": "official_api",
     "url": "https://data.taipei/api/v1/dataset/1700a7e6-3d27-47f9-89d9-1811c9f7489c?scope=resourceAquire",
+    "rawPath": "data/tfam-raw.json",
+    "responseFormat": "data-taipei",
     "enabled": true,
     "location": {
       "location": "臺北市中山區中山北路三段181號",
@@ -422,6 +428,8 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
     "name": "文化快遞（臺北市文化局）",
     "type": "official_api",
     "url": "https://cultureexpress.taipei/OpenData/Event/C000003",
+    "rawPath": "data/culture-express-raw.json",
+    "responseFormat": "array",
     "enabled": true,
     "location": null,
     "requiresReview": false
@@ -431,22 +439,64 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 
 （`culture-express` 這筆是第 10 節整合文化快遞時補上的，當時 `build-events.mjs` 已經直接串接這個來源，跟本節最初寫這段時「先只做設定檔、不接程式」的狀態不同，見第 10 節。）
 
-**這一步刻意只做設定檔本身，沒有把它接進 `build-events.mjs`。** `build-events.mjs` 目前處理文化部跟北美館兩個來源的方式（`inputPath`／`TFAM_RAW_PATH`／`TFAM_OVERRIDES_PATH` 這幾個寫死的路徑）還沒有改成讀這個設定檔——那是之後要不要做、怎麼做的另一個決定（例如：`enabled: false` 要在腳本裡實際生效，勢必要改 `build-events.mjs` 去讀這份設定檔而不是寫死路徑），先把設定檔的形狀定下來、確認沒問題，再決定要不要動 `build-events.mjs`。
+**（以下是第一步當時的狀態；9.3 之後 `fetch-sources.mjs` 已經會讀這份設定檔、`enabled: false` 也會生效，`build-events.mjs` 仍用寫死的 raw 檔路徑，但跟 `rawPath` 一致。）** **這一步刻意只做設定檔本身，沒有把它接進 `build-events.mjs`。** `build-events.mjs` 目前處理文化部跟北美館兩個來源的方式（`inputPath`／`TFAM_RAW_PATH`／`TFAM_OVERRIDES_PATH` 這幾個寫死的路徑）還沒有改成讀這個設定檔——那是之後要不要做、怎麼做的另一個決定（例如：`enabled: false` 要在腳本裡實際生效，勢必要改 `build-events.mjs` 去讀這份設定檔而不是寫死路徑），先把設定檔的形狀定下來、確認沒問題，再決定要不要動 `build-events.mjs`。
 
 ### 9.2 GitHub Actions 排程（`.github/workflows/update-events.yml`）
 
 新增排程 workflow，每週一台灣時間 08:00（= UTC 週一 00:00，用 cron `0 0 * * 1`）自動重新產生 `events.json`，有變化才 commit 到 `main`；另外開放 `workflow_dispatch` 手動觸發，不用等到下週一才能測試。
 
-流程：checkout → 裝 Node 22 → `node scripts/build-events.mjs`（吃 repo 裡現有的 `sample.json`／`data/tfam-overrides.json`／選用的 `data/tfam-raw.json`／選用的 `data/culture-express-raw.json`，用預設路徑，不用額外參數）→ 用 `git diff --quiet -- events.json` 判斷有沒有變化，沒變化就跳過、避免產生空 commit，有變化才用 `github-actions[bot]` 身份 commit + push 回 `main`。
+流程（9.3 之後）：checkout → 裝 Node 22 → `node scripts/fetch-sources.mjs`（抓三個來源的最新資料，寫進各自的 raw 檔）→ `node scripts/build-events.mjs`（用預設路徑，不用額外參數）→ `events.json` 跟 `data/*-raw.json` 任一有變化才用 `github-actions[bot]` 身份 commit + push 回 `main`，都沒變化就跳過、避免產生空 commit。
 
 需要 `permissions: contents: write` 讓內建的 `GITHUB_TOKEN` 有權限 push 回 repo；加了 `concurrency` 群組防止排程跟手動觸發同時各跑一次互相搶 push。
 
 **兩個要注意的地方：**
 
 1. **`on:` 刻意寫成 `"on":`（加引號）**——不加引號的話，有些 YAML 1.1 剖析器（例如 PyYAML 預設模式）會把裸的 `on` 當成布林值 `true` 解析（YAML 的經典「挪威問題」，這次寫的時候用 PyYAML 驗證語法真的踩到了）。GitHub Actions 自己的剖析器能正確處理不加引號的 `on`，但其他工具不一定能，加引號可以完全避開這個疑慮。
-2. **目前這支 workflow 每週執行幾乎都是 no-op**——`build-events.mjs` 只會轉換 repo 裡「已經存在」的靜態檔案，沒有接上「即時去抓 cloud.culture.tw／data.taipei 最新資料」的步驟（見 9.1 最後一段）。輸入沒變，輸出當然也不會變，`git diff --quiet` 會判斷沒有變化然後跳過 commit。這是預期中的行為，不是 bug——先把「排程 → build → 有變化才 commit」這條管線接好、驗證過，之後真正接上抓取邏輯（改掉 `sample.json`/`tfam-raw.json` 這些寫死路徑，改成排程當下即時抓）時，這支 workflow 本身不用再改。
+2. **（已在 9.3 解決）原本這支 workflow 每週執行幾乎都是 no-op**——`build-events.mjs` 只會轉換 repo 裡「已經存在」的靜態檔案，沒有接上「即時去抓 cloud.culture.tw／data.taipei 最新資料」的步驟（見 9.1 最後一段）。輸入沒變，輸出當然也不會變，`git diff --quiet` 會判斷沒有變化然後跳過 commit。這是預期中的行為，不是 bug——先把「排程 → build → 有變化才 commit」這條管線接好、驗證過，之後真正接上抓取邏輯（改掉 `sample.json`/`tfam-raw.json` 這些寫死路徑，改成排程當下即時抓）時，這支 workflow 本身不用再改。
 
 **已驗證**：本機用完全相同的指令（`node scripts/build-events.mjs`，repo 根目錄、不帶參數）跑過，輸出跟現有 `events.json` 一致（`git diff --quiet -- events.json` 判斷為無變化），確認「沒變化就跳過 commit」這條路徑邏輯正確；YAML 語法也用 PyYAML 解析驗證過。**無法驗證的部分**：這個 sandbox 連不上 GitHub Actions 的執行環境，沒辦法實際跑一次 workflow 確認 checkout/push 權限等在真實 Actions runner 上沒問題，這部分只能等 merge 後在你的 repo 上跑第一次（建議先手動觸發 `workflow_dispatch` 測一次，不要等排程）。
+
+### 9.3 實際抓取三個來源（`scripts/fetch-sources.mjs`）
+
+9.2 的排程原本只會轉換 repo 裡固定的快照，資料永遠不會變。現在 workflow 在 build 前多跑一步 `node scripts/fetch-sources.mjs`，依 `data/sources.json` 抓每個 `enabled: true` 的來源，寫進各自的 `rawPath`：
+
+| 來源 | `rawPath` | 格式 |
+|---|---|---|
+| 文化部 category=6 | `data/moc-raw.json` | JSON 陣列，原樣存檔 |
+| 文化快遞 C000003 | `data/culture-express-raw.json` | JSON 陣列，原樣存檔（全部 Category，篩選留給 build） |
+| 北美館 data.taipei | `data/tfam-raw.json` | 取出 `result.results`、用 `limit=1000`/`offset` 分頁後攤平成陣列存檔 |
+
+`sample.json` 已改名搬到 `data/moc-raw.json`（內容不變），`build-events.mjs` 的預設輸入改成這個路徑。第 4、8、10 節提到的 `sample.json` 指的是 2026/09/07 抓的那份快照，分析數字是當時的，不會隨排程更新。
+
+**抓取失敗時沿用上一次的 raw 檔**——每個來源各自處理，一個失敗不影響其他來源：
+
+- 每次請求 timeout 30 秒，失敗會重試 2 次（間隔 5 秒、15 秒）。
+- 以下都算失敗：網路錯誤／逾時、HTTP 不是 2xx、回應不是合法 JSON、格式跟 `responseFormat` 對不上、**0 筆**、**筆數驟減**。
+- **筆數驟減規則**：上一次 raw 檔 **≥ 20 筆**的來源，這次少於上一次的 50% 就算失敗（擋掉「API 回 200 但只有部分資料」，避免資料默默縮水）。上一次 **< 20 筆**的小來源不套用這條，只要不是 0 筆就算成功——北美館這種個位數筆數的來源，換檔期時掉一半是正常的。上一次沒有 raw 檔時也不套用。
+- 失敗時不碰原本的 raw 檔；成功時先寫 `<rawPath>.tmp` 再改名覆蓋，寫到一半中斷也不會弄壞上一次的檔案。
+- 抓取腳本只有在 `sources.json` 本身讀不到/壞掉時才會以非 0 結束，其他情況一律以 0 結束，build 一定會跑。
+- 如果某個來源抓取失敗、而且根本沒有上一次的 raw 檔（例如北美館第一次就失敗），build 照既有的優雅降級處理（北美館事件照 overrides 產生、只是沒有簡介；文化快遞整個略過）。文化部的 raw 檔是必要的，但已經 commit 在 repo 裡，所以不會發生。
+- **最後一道保險**：`build-events.mjs` 合併出 0 筆時直接失敗、不覆寫 `events.json`，workflow 這一步失敗就不會走到 commit。
+
+**raw 檔也要一起 commit**：「沿用上一次的 raw 檔」的前提是上一次的檔案在 repo 裡——不 commit 的話，下次 runner checkout 下來的永遠是舊快照。commit 判斷改成 `git status --porcelain -- events.json 'data/*-raw.json'`，第一次新建的 `data/tfam-raw.json`（untracked）也會被偵測到。代價是 repo 每週多一份 raw 檔的差異（文化快遞約 500KB），以目前的資料量可以接受。
+
+**log**：每個來源印一行，另外把同樣的表格寫進 GitHub Actions 的 Job Summary，失敗的來源會多一個 `::warning::` annotation，不用點進 log 就看得到：
+
+```
+[moc-exhibitions] ✅ 抓取成功：352 筆（上次：344 筆）→ data/moc-raw.json
+[tfam] ✅ 抓取成功：12 筆（上次：無檔案）→ data/tfam-raw.json
+[tfam]    欄位：title、內容、發布單位
+[culture-express] ⚠️ 抓取失敗（HTTP 403，已重試 2 次），沿用上一次的 data/culture-express-raw.json（343 筆）
+```
+
+之後 `build-events.mjs` 照原本的方式印出合併後各來源的筆數，北美館另外印「raw 幾筆、其中幾筆 override 對得到」。
+
+**已驗證**（本機，用假的 API server）：15 種情況全部符合預期——成功、筆數驟減（344→100 失敗；8→3 小來源成功；剛好 20→3 失敗）、0 筆（大小來源都失敗）、HTTP 500、JSON 壞掉、不是陣列、逾時、第一次失敗第二次成功、data.taipei 1500 筆分 2 頁、`enabled: false` 略過、不支援的 `responseFormat`、沒有上一次 raw 檔時失敗；失敗的 raw 檔內容都沒被動到、沒有殘留 `.tmp`。也在 git worktree 裡從抓取、build 到 commit 判斷完整模擬過一次，並確認合併 0 筆時 build 以 exit 1 結束、`events.json` 沒被覆寫。改名後 build 的 `events.json` 跟改名前完全一致。
+
+**無法在這個 sandbox 驗證、要等 merge 後手動觸發 `workflow_dispatch` 才知道的**：
+
+1. 三個 API 從 GitHub Actions runner（海外 IP）連不連得到——部分政府網站會擋海外 IP。連不到也不會壞，log 會明確顯示哪個來源失敗、沿用舊檔。
+2. **data.taipei 的實際回應格式跟欄位名稱**（`result.results`、`title`／`內容`／`發布單位`）從來沒有用真實回傳驗證過（issue #5 時連不上）。格式不對會被當成抓取失敗；欄位名稱不對的話抓取會成功，但 build 會印出「0/4 筆 override 對得到」，北美館事件照 overrides 產生、只是沒有簡介，不會讓 build 失敗。
 
 ---
 
@@ -526,4 +576,4 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 - `ImageFile` 是 `cultureexpress.taipei/UploadPlugin?file=...` 這種轉址/代理連結，不是原始圖檔網址，先照使用者的方案原封不動使用、之後看實際顯示效果如何再決定要不要處理。
 - `Introduction` 欄位常含 `\r\n`，已用既有的 `shortDescription()` 一併消毒。
 - 目前只納入 `Category === "展覽"`；「講座」「表演藝術」「音樂現場」等其他 8 種類別的資料還沒有評估是否要一併收錄，是之後可以考慮的擴充方向。
-- `data/culture-express-raw.json` 是一次性快照（使用者手動貼資料當下的內容），還沒有接上真正的抓取流程（跟 `tfam-raw.json` 狀態相同，見第 9 節的多資料來源自動化管線）。
+- `data/culture-express-raw.json` 是一次性快照（使用者手動貼資料當下的內容），還沒有接上真正的抓取流程（跟 `tfam-raw.json` 狀態相同，見第 9 節的多資料來源自動化管線）。（**更新**：已在 9.3 由 `scripts/fetch-sources.mjs` 接上排程抓取。）

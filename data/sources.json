@@ -4,6 +4,8 @@
     "name": "文化部展覽資訊（category=6）",
     "type": "official_api",
     "url": "https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFindTypeJ&category=6",
+    "rawPath": "data/moc-raw.json",
+    "responseFormat": "array",
     "enabled": true,
     "location": null,
     "requiresReview": false
@@ -13,6 +15,8 @@
     "name": "臺北市立美術館（data.taipei）",
     "type": "official_api",
     "url": "https://data.taipei/api/v1/dataset/1700a7e6-3d27-47f9-89d9-1811c9f7489c?scope=resourceAquire",
+    "rawPath": "data/tfam-raw.json",
+    "responseFormat": "data-taipei",
     "enabled": true,
     "location": {
       "location": "臺北市中山區中山北路三段181號",
@@ -27,6 +31,8 @@
     "name": "文化快遞（臺北市文化局）",
     "type": "official_api",
     "url": "https://cultureexpress.taipei/OpenData/Event/C000003",
+    "rawPath": "data/culture-express-raw.json",
+    "responseFormat": "array",
     "enabled": true,
     "location": null,
     "requiresReview": false
