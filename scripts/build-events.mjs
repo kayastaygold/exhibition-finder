@@ -658,6 +658,50 @@ function resolveMuseumVenue(venueText, venue) {
   return { location: "", locationName: text, latitude: null, longitude: null };
 }
 
+const SLASH_DATE = /^\d{4}\/\d{2}\/\d{2}$/;
+
+async function readJsonArrayIfExists(path) {
+  if (!path) return null;
+  try {
+    const data = JSON.parse(await readFile(path, "utf-8"));
+    if (!Array.isArray(data)) throw new Error(`${path} 不是陣列`);
+    return data;
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
+function notice(title, message) {
+  console.log(`ℹ️ ${message}`);
+  if (process.env.GITHUB_ACTIONS) console.log(`::notice title=${title}::${message}`);
+}
+
+// 人工維護的 override（overridesPath，格式同 raw 紀錄，另外可以有 lastVerified、sources
+// 這些給人看的欄位）跟自動抓到的 raw 合併：
+//   - 格式不對的那一筆略過、發 ::warning::（其他筆照常），不讓一筆手誤卡住整個 build
+//   - 已經被自動抓到的（id 相同，或標題相似度 > 0.8）略過，發 ::notice:: 提醒可以從
+//     override 刪掉——自動抓到的版本優先，override 只補自動抓不到的
+// 見 schema.md 11.8。
+function mergeMuseumOverrides(source, raw, overrides) {
+  const merged = [...raw];
+  for (const o of overrides) {
+    const label = `${source.overridesPath} 的「${o?.title ?? o?.id ?? "?"}」`;
+    const valid =
+      o?.id && o.title?.trim() && SLASH_DATE.test(o.startDate ?? "") && SLASH_DATE.test(o.endDate ?? "") && o.endDate >= o.startDate;
+    if (!valid) {
+      warn("美術館 override 格式不對", `${label}缺 id／標題，或起訖日不是 YYYY/MM/DD，這筆略過`);
+      continue;
+    }
+    if (raw.some((r) => r.id === o.id || titleSimilarity(r.title, o.title) > 0.8)) {
+      notice("美術館 override 已經自動抓到", `${label}已經被自動抓到，這筆 override 略過，可以從檔案刪除`);
+      continue;
+    }
+    merged.push(o);
+  }
+  return merged;
+}
+
 async function loadMuseumEvents() {
   let sources;
   try {
@@ -669,16 +713,11 @@ async function loadMuseumEvents() {
 
   const events = [];
   for (const source of sources.filter((s) => s.kind === "museum" && s.enabled)) {
-    let raw;
-    try {
-      raw = JSON.parse(await readFile(source.rawPath, "utf-8"));
-    } catch (err) {
-      if (err.code === "ENOENT") {
-        console.log(`${source.rawPath} 不存在，略過${source.location.locationName}`);
-        continue;
-      }
-      throw err;
-    }
+    const scraped = await readJsonArrayIfExists(source.rawPath);
+    const overrides = await readJsonArrayIfExists(source.overridesPath);
+    if (scraped === null && source.rawPath) console.log(`${source.rawPath} 不存在，${source.location.locationName}沒有自動抓取的資料`);
+    if (scraped === null && overrides === null) continue;
+    const raw = mergeMuseumOverrides(source, scraped ?? [], overrides ?? []);
 
     for (const r of raw) {
       const venue = resolveMuseumVenue(r.venueText, source.location);
@@ -711,7 +750,11 @@ async function loadMuseumEvents() {
         ],
       });
     }
-    console.log(`${source.location.locationName}：${raw.length} 筆（${source.rawPath}）`);
+    const addedByOverride = raw.length - (scraped ?? []).length;
+    console.log(
+      `${source.location.locationName}：${raw.length} 筆` +
+        `（自動抓取 ${(scraped ?? []).length} 筆${source.overridesPath ? `、人工補 ${addedByOverride} 筆` : ""}）`
+    );
   }
   return events;
 }
