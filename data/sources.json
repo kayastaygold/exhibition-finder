@@ -36,5 +36,57 @@
     "enabled": true,
     "location": null,
     "requiresReview": false
+  },
+  {
+    "id": "ntcam",
+    "name": "新北市美術館（官網）",
+    "type": "scrape",
+    "kind": "museum",
+    "url": "https://ntcart.museum/exhibition.aspx",
+    "rawPath": "data/ntcam-raw.json",
+    "responseFormat": "ntcam",
+    "enabled": true,
+    "location": {
+      "location": "新北市鶯歌區館前路300號",
+      "locationName": "新北市美術館",
+      "latitude": null,
+      "longitude": null,
+      "aliases": [
+        "新北美術館",
+        "NTCAM"
+      ]
+    },
+    "requiresReview": false
+  },
+  {
+    "id": "ntmofa",
+    "name": "國立臺灣美術館（官網）",
+    "type": "scrape",
+    "kind": "museum",
+    "url": "https://www.ntmofa.gov.tw/News_Actives_photo.aspx?n=1462&sms=11893",
+    "urls": [
+      "https://www.ntmofa.gov.tw/News_Actives_photo.aspx?n=1462&sms=11893",
+      "https://www.ntmofa.gov.tw/News_Actives_photo.aspx?n=1464&sms=11893"
+    ],
+    "rawPath": "data/ntmofa-raw.json",
+    "responseFormat": "ntmofa",
+    "enabled": true,
+    "location": {
+      "location": "臺中市西區五權西路一段2號",
+      "locationName": "國立臺灣美術館",
+      "latitude": null,
+      "longitude": null,
+      "aliases": [
+        "國美館",
+        "台灣美術館",
+        "臺灣美術館",
+        "臺灣兒童藝術基地"
+      ],
+      "knownVenues": {
+        "國家攝影文化中心臺北館": "臺北市中正區忠孝西路一段70號",
+        "桃園國際機場": "桃園市大園區航站南路9號"
+      }
+    },
+    "requiresReview": false
   }
 ]

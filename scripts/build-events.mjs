@@ -20,6 +20,9 @@
 // 地點，或新增文化快遞沒有的北美館展覽，見下方 loadTfamOverrides()。
 // data.taipei 的北美館資料集（data/tfam-raw.json）已停用，讀取的程式碼保留，
 // 檔案不存在也沒關係，見下方 loadTfamEvents()。
+//
+// 美術館官網（新北市美術館、國美館…）讀 data/sources.json 裡 kind: "museum" 的來源，
+// 各自的 rawPath 由 scripts/scrapers/ 的爬取函式產生，見下方 loadMuseumEvents()。
 
 import { readFile, writeFile } from "node:fs/promises";
 
@@ -28,6 +31,8 @@ const outputPath = process.argv[3] ?? "events.json";
 const TFAM_RAW_PATH = "data/tfam-raw.json";
 const TFAM_OVERRIDES_PATH = "data/tfam-overrides.json";
 const CULTURE_EXPRESS_RAW_PATH = "data/culture-express-raw.json";
+// 美術館官網來源（kind: "museum"）的 rawPath、館址都定義在 sources.json，見 loadMuseumEvents()
+const SOURCES_PATH = "data/sources.json";
 
 // 台灣 22 個縣市，用來從 location 地址字串抽出縣市（含正體「臺」與俗體「台」兩種寫法）。
 // 見 schema.md 4.1.1：實測樣本中僅出現「臺」，但正則仍涵蓋「台」以防未來資料混用。
@@ -430,18 +435,23 @@ function rawTitleSimilarity(a, b) {
 // 這些破折號前後都沒有空白，不會被去掉。見 schema.md 10.4。
 const VENUE_PREFIX_PATTERN = /^\s*[^\s\-－—｜|]{1,10}(?:\s+[-－—]+\s*|\s*[-－—]+\s+)/;
 
-function stripVenuePrefix(title) {
-  const stripped = (title ?? "").replace(VENUE_PREFIX_PATTERN, "");
+// 結尾的年份括號：文化部常在標題後面加「（2026）」，例如「廊道計畫：衍生物（2026）」
+// 對應新北市美術館官網的「廊道計畫：衍生物」。短標題多這 6 個字，相似度就掉到 0.78。
+const TRAILING_YEAR_PATTERN = /\s*[（(]\s*(?:19|20)\d{2}\s*年?\s*[)）]\s*$/;
+
+// 比對前去掉標題的「裝飾」：開頭的場館名前綴、結尾的年份括號。
+function stripTitleDecorations(title) {
+  const stripped = (title ?? "").replace(VENUE_PREFIX_PATTERN, "").replace(TRAILING_YEAR_PATTERN, "");
   return stripped.trim() === "" ? title : stripped;
 }
 
-// 實際用來去重的標題相似度：原標題、去前綴後的標題兩兩組合，取最高分。
+// 實際用來去重的標題相似度：原標題、去掉裝飾後的標題兩兩組合，取最高分。
 // 取最大值只會「多配對到」、不會讓原本配對得到的變成配對不到，再加上 isSameExhibition()
-// 還要求場地相同，去掉前綴後標題變短也不會跨場館誤配。用 9/11 快照跟 10/25 抓取
-// 的資料驗證過：原本的配對一組都沒少，只多了「王雅慧：旅行者」這組該配對的。
+// 還要求場地相同，去掉裝飾後標題變短也不會跨場館誤配。前綴規則用 9/11 快照跟 10/25
+// 抓取的資料驗證過（只多了「王雅慧：旅行者」）；年份括號規則見 schema.md 11.4。
 function titleSimilarity(a, b) {
-  const strippedA = stripVenuePrefix(a);
-  const strippedB = stripVenuePrefix(b);
+  const strippedA = stripTitleDecorations(a);
+  const strippedB = stripTitleDecorations(b);
   return Math.max(
     rawTitleSimilarity(a, b),
     rawTitleSimilarity(strippedA, strippedB),
@@ -617,6 +627,95 @@ function applyCultureExpressOverrides(ceEvents, overrides) {
   }
 }
 
+// ---------------- 美術館官網（sources.json 裡 kind: "museum" 的來源）----------------
+// 各館的爬取函式（scripts/scrapers/）已經把官網資料整理成統一格式存進 rawPath：
+//   { id, title, startDate, endDate, imageUrl, url, venueText, description }
+// 這裡只負責轉成事件，見 schema.md 第 11 節。
+
+// 「301展覽室」「6B展覽室」這種開頭就是展覽室編號的地點，視為在館內
+const ROOM_AT_START = /^[\s\dA-Za-zＡ-Ｚａ-ｚ０-９一二三四五六七八九十]{0,6}(?:展覽室|展間|展廳|展區)/;
+
+// 官網寫的展出地點原文 → showInfo 的地點。刻意保守：判斷不出是館內還是哪個縣市的，
+// 就讓縣市留空（只顯示原文），寧可篩選時找不到，也不要把館外的展覽（例如國美館在
+// 韓國光州、桃園機場的展覽）錯放到美術館所在的縣市底下。
+function resolveMuseumVenue(venueText, venue) {
+  const text = (venueText ?? "").trim();
+  const atVenue = {
+    location: venue.location,
+    locationName: text || venue.locationName,
+    latitude: venue.latitude,
+    longitude: venue.longitude,
+  };
+  if (!text) return atVenue;
+  // 先比對館名：「新北市美術館 – 大廳」裡的館名本身就含「新北市」，要先認出是館內
+  const names = [venue.locationName, ...(venue.aliases ?? [])];
+  if (names.some((n) => n && text.includes(n)) || ROOM_AT_START.test(text)) return atVenue;
+  // 館方常用、但官網沒寫地址的館外地點（sources.json 的 knownVenues：名稱 → 地址）
+  for (const [name, address] of Object.entries(venue.knownVenues ?? {})) {
+    if (text.includes(name)) return { location: address, locationName: text, latitude: null, longitude: null };
+  }
+  if (extractCounty(text)) return { location: text, locationName: text, latitude: null, longitude: null };
+  return { location: "", locationName: text, latitude: null, longitude: null };
+}
+
+async function loadMuseumEvents() {
+  let sources;
+  try {
+    sources = JSON.parse(await readFile(SOURCES_PATH, "utf-8"));
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw err;
+  }
+
+  const events = [];
+  for (const source of sources.filter((s) => s.kind === "museum" && s.enabled)) {
+    let raw;
+    try {
+      raw = JSON.parse(await readFile(source.rawPath, "utf-8"));
+    } catch (err) {
+      if (err.code === "ENOENT") {
+        console.log(`${source.rawPath} 不存在，略過${source.location.locationName}`);
+        continue;
+      }
+      throw err;
+    }
+
+    for (const r of raw) {
+      const venue = resolveMuseumVenue(r.venueText, source.location);
+      const merged = { title: r.title, startDate: r.startDate, endDate: r.endDate };
+      events.push({
+        uid: `${source.id}-${r.id}`,
+        title: r.title,
+        startDate: r.startDate,
+        endDate: r.endDate,
+        imageUrl: r.imageUrl && r.imageUrl.trim() !== "" ? r.imageUrl : null,
+        description: shortDescription(r.description),
+        showUnit: source.location.locationName,
+        isPermanent: isPermanentExhibition(merged),
+        isOnline: isOnlineExhibition(merged),
+        source: source.id,
+        url: r.url ?? "",
+        showInfo: [
+          {
+            location: venue.location,
+            locationName: venue.locationName,
+            county: extractCounty(venue.location),
+            district: extractDistrict(venue.location),
+            latitude: normalizeCoord(venue.latitude, -90, 90),
+            longitude: normalizeCoord(venue.longitude, -180, 180),
+            time: "",
+            endTime: "",
+            onSales: "UNKNOWN",
+            price: "",
+          },
+        ],
+      });
+    }
+    console.log(`${source.location.locationName}：${raw.length} 筆（${source.rawPath}）`);
+  }
+  return events;
+}
+
 async function main() {
   const raw = JSON.parse(await readFile(inputPath, "utf-8"));
   if (!Array.isArray(raw)) {
@@ -653,7 +752,24 @@ async function main() {
     }
   }
 
-  const events = [...remainingCultureEvents, ...remainingTfamEvents, ...ceEvents];
+  // 美術館官網版本優先於其他所有來源：展期、地點（國美館每檔展覽自己的展出地點）
+  // 都是館方第一手資料。跟文化部／北美館／文化快遞重疊的全部移除（不只一筆——
+  // 文化部資料本身就有同一檔重複上架的情況，見 schema.md 10.4）。
+  const museumEvents = await loadMuseumEvents();
+  let remainingCeEvents = [...ceEvents];
+  const museumReplaced = { moc: 0, tfam: 0, culture_express: 0 };
+  for (const me of museumEvents) {
+    const keep = (ev) => {
+      if (!isSameExhibition(me, ev)) return true;
+      museumReplaced[ev.source] = (museumReplaced[ev.source] ?? 0) + 1;
+      return false;
+    };
+    remainingCultureEvents = remainingCultureEvents.filter(keep);
+    remainingTfamEvents = remainingTfamEvents.filter(keep);
+    remainingCeEvents = remainingCeEvents.filter(keep);
+  }
+
+  const events = [...remainingCultureEvents, ...remainingTfamEvents, ...remainingCeEvents, ...museumEvents];
 
   // 最後一道保險：合併出 0 筆一定是哪裡出錯了，直接失敗、不覆寫 events.json，
   // 這樣排程就不會把空資料 commit 上 main（見 schema.md 第 9.3 節）。
@@ -666,6 +782,8 @@ async function main() {
     `已從 ${inputPath}（${raw.length} 筆，去重後 ${remainingCultureEvents.length} 筆）` +
       `+ 北美館（${tfamEvents.length} 筆，去重後 ${remainingTfamEvents.length} 筆）` +
       `+ 文化快遞（${ceEvents.length} 筆，取代了文化部 ${mocReplacedCount} 筆、北美館 ${tfamReplacedCount} 筆）` +
+      `+ 美術館官網（${museumEvents.length} 筆，取代了文化部 ${museumReplaced.moc} 筆、` +
+      `北美館 ${museumReplaced.tfam} 筆、文化快遞 ${museumReplaced.culture_express} 筆）` +
       `產生 ${outputPath}（${events.length} 筆）`
   );
 }

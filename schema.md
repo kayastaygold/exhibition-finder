@@ -645,3 +645,72 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 - `Introduction` 欄位常含 `\r\n`，已用既有的 `shortDescription()` 一併消毒。
 - 目前只納入 `Category === "展覽"`；「講座」「表演藝術」「音樂現場」等其他 8 種類別的資料還沒有評估是否要一併收錄，是之後可以考慮的擴充方向。
 - `data/culture-express-raw.json` 是一次性快照（使用者手動貼資料當下的內容），還沒有接上真正的抓取流程（跟 `tfam-raw.json` 狀態相同，見第 9 節的多資料來源自動化管線）。（**更新**：已在 9.3 由 `scripts/fetch-sources.mjs` 接上排程抓取。）
+
+---
+
+## 11. 美術館官網（固定清單）
+
+文化部、文化快遞都幾乎沒有大型美術館的資料（中美館、國美館、桃美館都是 0 筆，新北市美術館只有 2 筆），改成「固定清單」：每間館個別評估官網，能自動抓的接進排程，不能的用 override 加每月查證（使用者 2026/10/26 決定）。
+
+### 11.1 調查結果（2026/10/25～26，用 `probe.yml` 在 runner 上探測）
+
+| 館 | 官網 | RSS／API | robots.txt | 結論 |
+|---|---|---|---|---|
+| 新北市美術館 | `ntcart.museum` | 沒有公開 API；列表頁前端自己 POST `exhibition.aspx`（`q=get`）取 JSON | 不存在（404） | ✅ 自動抓（11.2） |
+| 國立臺灣美術館 | `www.ntmofa.gov.tw` | 沒有 RSS；data.gov.tw 只有 2015 年的舊資料集 | 不存在（404）；詳細頁所在的 `event.culture.tw` 也不存在 | ✅ 自動抓（11.3） |
+| 臺中市立美術館 | `www.tcam.museum` | WordPress 的 `/wp-json/api` 被 robots.txt **禁止** | 只禁止 `/wp-json/api`、後台、`sw.js` | ⚠️ 從首頁連結抓詳細頁（PR 2，還沒做） |
+| 桃園市立美術館 | `tmofa.tycg.gov.tw` | — | 讀不到：所有請求（含 robots.txt）都被 HiNet CDN 的 Anti-DDoS JavaScript 驗證擋下 | ❌ override＋每月查證（PR 3，還沒做）。**不嘗試繞過防護** |
+
+### 11.2 新北市美術館（`scripts/scrapers/ntcam.mjs`）
+
+照網站前端同樣的方式 POST `https://ntcart.museum/exhibition.aspx`：`q=get`、`data={"p":頁碼,"ps":12,"Kind":""}`，回傳 `{ list: { items, total: 總頁數, totalCnt }, future_list: { items }, kinds }`。逐頁抓到 `total` 為止（上限 10 頁），`list` 跟 `future_list` 合併、依 `ExNo` 去重；`Enable`／`ExVerifyYn` 是 `"N"` 的不收。
+
+| 官網欄位 | raw 紀錄 | 備註 |
+|---|---|---|
+| `ExNo` | `id` | 事件 uid 是 `ntcam-<ExNo>` |
+| `ExName` | `title` | |
+| `ExDateSt`／`ExDateEn` | `startDate`／`endDate` | ASP.NET 的 `/Date(毫秒)/`，換成台灣時間的 `YYYY/MM/DD` |
+| `ExListImg`（沒有就用 `ExMainImg`） | `imageUrl` | `https://ntcart.museum/retrieve/exhibition/<檔名>`（實測 200 image/jpeg）；檔名含路徑時照前端模板改用 `https://admin.ntcart.museum/Upload/<路徑>` |
+| `ExLocationTextTW` | `venueText` | 例：「新北市美術館 – 6B展覽室」 |
+| `ContentDesc`（HTML） | `description` | |
+| — | `url` | `https://ntcart.museum/exhibition_content.aspx?id=<ExNo>` |
+
+這是網站前端自己用的 JSON 端點，不是公開 API，網站改版時可能失效；失效時 11.5 的驗證會讓這個來源沿用上一次的 raw 檔，不會寫進壞資料。
+
+### 11.3 國立臺灣美術館（`scripts/scrapers/ntmofa.mjs`）
+
+抓兩個列表頁（`sources.json` 的 `urls`）：當期展覽 `News_Actives_photo.aspx?n=1462`、展覽預告 `n=1464`。每張卡片是 `<a class="div-activity" title="標題" href="https://event.culture.tw/mocweb/reg/NTMOFA/Detail.init.ctr?actId=N">`，裡面有圖片、截斷的摘要、`<p class="activity-time">日期：YYYY-MM-DD ~ YYYY-MM-DD</p>`；依 `actId` 去重，事件 uid 是 `ntmofa-<actId>`。每檔展覽再抓一次詳細頁（event.culture.tw），取說明文字裡的「展覽日期│…」「展覽地點│…」。
+
+- **展期**：優先用詳細頁（其次是摘要）裡明確標示「展期／展覽日期」的區間，找不到才用卡片日期。卡片日期是活動平台上登記的期間，不一定等於實際展期（「黯像：看見不見」卡片 2026-05-11～10-26，標示的展期是 2026.5.22—10.26；線上展覽的卡片迄日是 2030-12-31 這種佔位值）。區間寫法支援 `2026/09/05-11/15`（迄日省略年份，迄月較小就當跨年）、`2026.5.22—2026.10.26`、`2026/08/29 (六) – 2026/10/25` 等。
+- **地點**：國美館的展覽常在館外（國家攝影文化中心臺北館、桃園機場、韓國光州…），每檔都取詳細頁的「展覽地點」，對應規則見 11.4。
+- 詳細頁抓不到時，只有那一檔退回列表頁上的資訊，不算整個來源失敗。
+
+### 11.4 轉成事件（`build-events.mjs` 的 `loadMuseumEvents()`）
+
+`sources.json` 裡 `kind: "museum"` 而且 `enabled: true` 的來源，讀各自的 `rawPath`（統一格式：`id`、`title`、`startDate`、`endDate`、`imageUrl`、`url`、`venueText`、`description`），`source` 欄位是來源 id（`ntcam`、`ntmofa`），`showUnit` 是館名，另外多一個 `url` 欄位指向官網詳細頁。`isPermanent`／`isOnline` 照一般規則判斷。
+
+**地點對應**（`resolveMuseumVenue()`，刻意保守——判斷不出來就讓縣市留空，不要把館外展覽錯放到美術館所在的縣市）：
+
+1. 官網沒寫地點 → 館址（`sources.json` 的 `location`）。
+2. 提到館名或別名（`location.aliases`），或開頭就是展覽室編號（「301 展覽室」）→ 館址，`locationName` 保留官網原文（「新北市美術館 – 6B展覽室」）。要先比對館名，因為「新北市美術館」本身就含「新北市」。
+3. 符合 `location.knownVenues`（館方常用、但官網常常沒寫地址的館外地點：名稱 → 地址）→ 用那個地址。目前國美館有「國家攝影文化中心臺北館」「桃園國際機場」兩筆。
+4. 原文裡有臺灣縣市名稱 → 用原文當地址。
+5. 其他（例如「韓國光州國立亞洲文化殿堂（ACC）」）→ 縣市留空，只顯示原文。
+
+**去重**：美術館官網版本優先於其他所有來源（展期、地點是館方第一手資料），跟文化部／北美館／文化快遞重疊的**全部**移除（文化部本身就有同一檔重複上架的情況）。比對沿用 `isSameExhibition()`，並在標題比對時另外去掉結尾的年份括號（`TRAILING_YEAR_PATTERN`）：文化部的「廊道計畫：衍生物（2026）」對新北官網的「廊道計畫：衍生物」原本只有 0.78，去掉後才配對得到。跟 10.4 的前綴規則一樣取最大值，驗證過：9/11 快照的結果完全不變；10/26 的資料只多了這一組該配對的。
+
+### 11.5 失敗處理
+
+沿用 9.3 的規則（失敗就沿用上一次的 raw 檔），另外加上：
+
+- **解析驗證**（`assertValidMuseumRecords()`）：任何一筆解析不出 `id`、標題、合法的起訖日（`YYYY/MM/DD`、迄日不早於起日），整個來源就當作抓取失敗——網站改版、解析規則失效時，寧可停在舊資料。國美館的列表頁一張卡片都解析不到也算失敗。
+- 這幾間館都不到 20 筆，適用小來源規則：只要不是 0 筆就算成功。
+- 請求禮節：同一次執行裡任兩個爬取請求至少間隔 1 秒（`SCRAPE_MIN_INTERVAL_MS`），User-Agent 標明本專案；每週一次，新北約 1 個請求、國美館約 2＋展覽數（目前 10）個請求。
+
+### 11.6 實測結果（2026/10/26，runner 上用真的官網資料跑 `fetch-sources.mjs`＋`build-events.mjs`）
+
+- 新北市美術館 8 筆、國美館 10 筆（當期 8＋預告 2），每筆都有圖片跟簡介。
+- 地點：新北 8 筆都對到新北市鶯歌區（並保留展覽室名稱）；國美館 9 筆對到縣市（臺中市西區 6、臺北市中正區 2、桃園市大園區 1），只有光州雙年展臺灣館縣市留空。
+- 去重：取代了文化部 2 筆（新北的「大廳計畫」「廊道計畫」）。
+- `events.json` 362 → 378 筆。
+- 國美館有 3 檔線上／數位展覽（迄日 2030-12-31），被判定為常設展，前端預設隱藏；其中 2 檔標題有「線上」，也會被判成線上展覽。
