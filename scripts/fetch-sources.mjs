@@ -12,6 +12,7 @@
 // 以下情況都算「抓取失敗」（會重試，重試完仍失敗就沿用上一次的 raw 檔）：
 //   - 網路錯誤、逾時、HTTP 不是 2xx
 //   - 回應不是合法 JSON，或格式跟 responseFormat 對不上
+//   - 美術館官網（type: "scrape"）：任何一筆解析不出標題或起訖日（見 scripts/scrapers/）
 //   - 0 筆
 //   - 筆數驟減：上一次 >= 20 筆、這次少於上一次的一半。上一次不到 20 筆的小來源
 //     （例如北美館，換檔期時個位數筆數掉一半是正常的）不套用這條，只要不是 0 筆就算成功。
@@ -22,6 +23,8 @@
 //   FETCH_RETRY_DELAYS_MS  重試間隔，逗號分隔（預設 "5000,15000"，也就是重試 2 次）
 
 import { readFile, writeFile, rename, appendFile } from "node:fs/promises";
+import { fetchNtcam } from "./scrapers/ntcam.mjs";
+import { fetchNtmofa } from "./scrapers/ntmofa.mjs";
 
 const SOURCES_PATH = process.env.SOURCES_PATH ?? "data/sources.json";
 const TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS ?? 30000);
@@ -40,7 +43,38 @@ const DATA_TAIPEI_MAX_PAGES = 20;
 
 const USER_AGENT = "exhibition-finder (+https://github.com/kayastaygold/exhibition-finder)";
 
+// 爬美術館官網時，同一次執行裡任兩個請求至少間隔這麼久，避免對官網造成負擔。
+const SCRAPE_MIN_INTERVAL_MS = Number(process.env.SCRAPE_MIN_INTERVAL_MS ?? 1000);
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// 給美術館爬取函式用的 HTTP 小工具：統一逾時、User-Agent、請求間隔，HTTP 不是 2xx 就丟錯。
+let lastScrapeRequestAt = 0;
+async function scrapeRequest(url, init = {}) {
+  const wait = lastScrapeRequestAt + SCRAPE_MIN_INTERVAL_MS - Date.now();
+  if (wait > 0) await sleep(wait);
+  lastScrapeRequestAt = Date.now();
+  const res = await fetch(url, {
+    ...init,
+    headers: { "User-Agent": USER_AGENT, "Accept-Language": "zh-TW,zh;q=0.9", ...(init.headers ?? {}) },
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}（${url}）`);
+  return res.text();
+}
+const scrapeHttp = {
+  getText: (url) => scrapeRequest(url),
+  postForm: (url, params) =>
+    scrapeRequest(url, {
+      method: "POST",
+      body: new URLSearchParams(params),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        Accept: "application/json, text/javascript, */*; q=0.01",
+      },
+    }),
+};
 
 async function fetchJson(url) {
   const res = await fetch(url, {
@@ -57,7 +91,7 @@ async function fetchJson(url) {
 }
 
 // 文化部、文化快遞：直接回傳 JSON 陣列，原樣存檔。
-async function fetchArray(url) {
+async function fetchArray({ url }) {
   const data = await fetchJson(url);
   if (!Array.isArray(data)) throw new Error("回應不是 JSON 陣列");
   return data;
@@ -65,7 +99,7 @@ async function fetchArray(url) {
 
 // data.taipei：回傳 { result: { count, results: [...] } }，只存 results 陣列
 // （build-events.mjs 的 loadTfamEvents() 讀的是攤平後的陣列）。
-async function fetchDataTaipei(url) {
+async function fetchDataTaipei({ url }) {
   const all = [];
   for (let page = 0; page < DATA_TAIPEI_MAX_PAGES; page++) {
     const pageUrl = new URL(url);
@@ -83,9 +117,12 @@ async function fetchDataTaipei(url) {
   return all;
 }
 
+// 每個 fetcher 收到整筆 source 設定跟 scrapeHttp，回傳要寫進 rawPath 的陣列。
 const FETCHERS = {
   array: fetchArray,
   "data-taipei": fetchDataTaipei,
+  ntcam: fetchNtcam,
+  ntmofa: fetchNtmofa,
 };
 
 async function readPreviousCount(rawPath) {
@@ -129,7 +166,7 @@ async function processSource(source) {
   let lastError;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      const records = await fetcher(source.url);
+      const records = await fetcher(source, scrapeHttp);
       validate(records, previousCount);
       await writeAtomic(source.rawPath, JSON.stringify(records));
       return { ok: true, count: records.length, previousCount, previousText, sampleKeys: Object.keys(records[0]) };
