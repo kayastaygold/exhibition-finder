@@ -8,7 +8,8 @@ name: Update events.json
 # 也開放手動觸發（workflow_dispatch），不用等到下週一才能測試這支 workflow。
 #
 # 流程：fetch-sources.mjs 依 data/sources.json 抓每個 enabled 的來源（目前是文化部、
-# 文化快遞；北美館 data.taipei 已停用，見 schema.md 8.6）的最新資料寫進各自的 raw 檔 → build-events.mjs 把 raw 檔轉成 events.json
+# 文化快遞、新北市美術館與國美館官網；北美館 data.taipei 已停用，見 schema.md 8.6、
+# 第 11 節）的最新資料寫進各自的 raw 檔 → build-events.mjs 把 raw 檔轉成 events.json
 # → 有任何變化才 commit。任一來源抓取失敗時，fetch-sources.mjs 會保留上一次的
 # raw 檔、印出警告，不會讓整個 workflow 失敗；只有 build 合併出 0 筆時才會失敗、
 # 不 commit。見 schema.md 第 9.3 節。
