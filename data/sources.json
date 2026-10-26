@@ -111,6 +111,31 @@
         "綠美圖"
       ]
     },
+    "requiresReview": false,
+    "overridesPath": "data/tcam-overrides.json"
+  },
+  {
+    "id": "tmofa",
+    "name": "桃園市立美術館（人工維護）",
+    "type": "manual",
+    "kind": "museum",
+    "url": "https://tmofa.tycg.gov.tw/ch/exhibitions/current-exhibitions",
+    "responseFormat": "manual",
+    "overridesPath": "data/tmofa-overrides.json",
+    "enabled": true,
+    "location": {
+      "location": "",
+      "locationName": "桃園市立美術館",
+      "latitude": null,
+      "longitude": null,
+      "aliases": [
+        "桃美館"
+      ],
+      "knownVenues": {
+        "橫山書法藝術館": "桃園市大園區大仁路100號",
+        "桃園市兒童美術館": "桃園市中壢區高鐵南路二段90號"
+      }
+    },
     "requiresReview": false
   }
 ]

@@ -192,6 +192,13 @@ async function main() {
       summaryRows.push(`| ${source.id} | ⏸️ 停用 | — | — |`);
       continue;
     }
+    // 人工維護的來源（例如桃美館：官網擋自動程式，見 schema.md 11.8）沒有東西要抓，
+    // 資料直接寫在 overridesPath，由每月查證更新。
+    if (source.responseFormat === "manual") {
+      console.log(`[${source.id}] ✍️ 人工維護（${source.overridesPath}），不抓取`);
+      summaryRows.push(`| ${source.id} | ✍️ 人工維護 | — | — |`);
+      continue;
+    }
 
     const result = await processSource(source);
     if (result.ok) {

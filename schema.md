@@ -659,7 +659,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 | 新北市美術館 | `ntcart.museum` | 沒有公開 API；列表頁前端自己 POST `exhibition.aspx`（`q=get`）取 JSON | 不存在（404） | ✅ 自動抓（11.2） |
 | 國立臺灣美術館 | `www.ntmofa.gov.tw` | 沒有 RSS；data.gov.tw 只有 2015 年的舊資料集 | 不存在（404）；詳細頁所在的 `event.culture.tw` 也不存在 | ✅ 自動抓（11.3） |
 | 臺中市立美術館 | `www.tcam.museum` | WordPress 的 `/wp-json/api` 被 robots.txt **禁止** | 只禁止 `/wp-json/api`、後台、`sw.js` | ⚠️ 從首頁找詳細頁、逐一解析（11.7） |
-| 桃園市立美術館 | `tmofa.tycg.gov.tw` | — | 讀不到：所有請求（含 robots.txt）都被 HiNet CDN 的 Anti-DDoS JavaScript 驗證擋下 | ❌ override＋每月查證（PR 3，還沒做）。**不嘗試繞過防護** |
+| 桃園市立美術館 | `tmofa.tycg.gov.tw` | — | 讀不到：所有請求（含 robots.txt）都被 HiNet CDN 的 Anti-DDoS JavaScript 驗證擋下 | ❌ 人工維護的 override＋每月查證（11.8）。**不嘗試繞過防護** |
 
 ### 11.2 新北市美術館（`scripts/scrapers/ntcam.mjs`）
 
@@ -687,7 +687,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 
 ### 11.4 轉成事件（`build-events.mjs` 的 `loadMuseumEvents()`）
 
-`sources.json` 裡 `kind: "museum"` 而且 `enabled: true` 的來源，讀各自的 `rawPath`（統一格式：`id`、`title`、`startDate`、`endDate`、`imageUrl`、`url`、`venueText`、`description`），`source` 欄位是來源 id（`ntcam`、`ntmofa`、`tcam`），`showUnit` 是館名，另外多一個 `url` 欄位指向官網詳細頁。`isPermanent`／`isOnline` 照一般規則判斷。
+`sources.json` 裡 `kind: "museum"` 而且 `enabled: true` 的來源，讀各自的 `rawPath`（加上 `overridesPath` 人工補的，見 11.8；統一格式：`id`、`title`、`startDate`、`endDate`、`imageUrl`、`url`、`venueText`、`description`），`source` 欄位是來源 id（`ntcam`、`ntmofa`、`tcam`、`tmofa`），`showUnit` 是館名，另外多一個 `url` 欄位指向官網詳細頁。`isPermanent`／`isOnline` 照一般規則判斷。
 
 **地點對應**（`resolveMuseumVenue()`，刻意保守——判斷不出來就讓縣市留空，不要把館外展覽錯放到美術館所在的縣市）：
 
@@ -725,9 +725,47 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 - **地點**：「臺中市立美術館 展覽室D、E」「綠美圖｜文化之森」都靠 `location.aliases`（中美館、綠美圖…）對到館址臺中市西屯區中科路2201號。
 - **主圖**：只認 `hero-clip` 那張，詳細頁其他 wp-content 圖片（藝術家照、作品圖、其他展覽的 banner）不用；沒有主圖就留空（「無界花園」目前沒有）。
 - **簡介**：詳細頁的 meta description 目前是全站共用的一句話，所有展覽都一樣時就清空，不顯示同一句話。
-- **沒有完整展期的不收**：「時間」欄只寫開始日（「庫房裡的光」：2025.10.28）或沒寫日期（「角落任務」）的長期展示，這次先不收，log 會列出來；要不要收、迄日怎麼處理，等使用者決定。
+- **沒有完整展期的不收**：「時間」欄只寫開始日（「庫房裡的光」：2025.10.28）或寫「常設」（「角落任務」）的長期展示不收，log 會列出來（「時間欄：常設」）。使用者 2026/10/26 決定維持不收（#21 的 PR 說明把「角落任務」寫成時間欄空白，是錯的，實際是「常設」）。
 - 單一詳細頁抓不到只略過那一檔；首頁一個展覽連結都找不到，整個來源當作失敗。
 
-**限制**：只抓得到首頁（含內嵌資料）有提到的展覽。每月查證時會核對中美館官網的展覽是否都有被抓到，有漏的用 override 補、在 PR 裡註明（使用者 2026/10/26 決定，PR 3 實作）。
+**限制**：只抓得到首頁（含內嵌資料）有提到的展覽。每月查證時會核對中美館官網的展覽是否都有被抓到，有漏的用 override 補、在 PR 裡註明（使用者 2026/10/26 決定），見 11.8。
 
 **實測結果**（2026/10/26，runner 上用真的官網資料）：首頁 6 個連結＋內嵌資料，共 8 檔；6 檔有完整展期收進來（顯示中 3 檔：真鍋大度、蠍子與青蛙、無界花園；已結束 3 檔：王水河、大肚之盟、熱暑人），2 檔沒有完整展期不收；地點全部對到臺中市西屯區；跟其他來源沒有重疊。`events.json` 378 → 384 筆。
+
+### 11.8 人工維護的 override 與每月查證
+
+自動抓不到的展覽（桃美館整個館、中美館漏抓的）用人工維護的 override 檔補，每月由排程開的 Claude Code session 照 `docs/monthly-museum-check.md` 用 WebSearch 查證、開 PR 給使用者確認（使用者 2026/10/26 決定）。
+
+**override 檔**（`sources.json` 的 `overridesPath`）：JSON 陣列，每一筆跟 11.4 的 raw 紀錄同格式（`id`、`title`、`startDate`、`endDate`、`imageUrl`、`url`、`venueText`、`description`），另外加兩個給人看、build 不使用的欄位：`lastVerified`（最後查證日 `YYYY-MM-DD`）、`sources`（查證用到的網址）。
+
+`build-events.mjs` 的 `mergeMuseumOverrides()` 把 override 跟自動抓到的 raw 合併，之後照 11.4 一樣轉成事件、對應地點、跟其他來源去重：
+
+- 格式不對（缺 `id`／標題、起訖日不是 `YYYY/MM/DD`、迄日早於起日）→ 那一筆略過、發 `::warning::`，其他筆照常。不讓一筆手誤卡住整個 build。
+- 已經被自動抓到（`id` 相同，或標題相似度 > 0.8）→ 略過、發 `::notice::` 提醒可以從檔案刪掉。自動抓到的版本優先。
+- log 印出「中美館：N 筆（自動抓取 X 筆、人工補 Y 筆）」。
+- 已經結束的不用急著刪：前端本來就排除迄日早於今天的展覽，每月查證時再清掉。
+
+**人工維護的來源**（`type: "manual"`、`responseFormat: "manual"`）：沒有 `rawPath`，`fetch-sources.mjs` 不抓、summary 顯示「✍️ 人工維護」，資料全部來自 override 檔。
+
+| 來源 id | override 檔 | 用途 |
+|---|---|---|
+| `tmofa` | `data/tmofa-overrides.json` | 桃美館（`type: "manual"`）。官網被 Anti-DDoS 擋，不抓、也不改抓 `tmofa-datastorage.tycg.gov.tw` 等其他主機 |
+| `tcam` | `data/tcam-overrides.json` | 中美館自動抓取漏掉的（目前是空陣列）。`id` 用官網詳細頁的 slug，之後自動抓到時才對得起來 |
+
+**桃美館**：本館預計 2028 年第一季開館，目前營運的是兩個分館，地址放在 `location.knownVenues`：橫山書法藝術館（桃園市大園區大仁路100號）、桃園市兒童美術館（桃園市中壢區高鐵南路二段90號）。`venueText` 要寫這兩個名稱才對得到地址。2026/10/26 第一次建立的 2 筆：
+
+| id | 展覽 | 場館 | 展期 | 來源 |
+|---|---|---|---|---|
+| `2026-hengshan-writing-variations` | 書寫的變奏與對話：書法・設計的當代語境 | 橫山書法藝術館 | 2026/08/20～2026/11/09 | 桃園電子報、非池中藝術網 |
+| `2026-kids-same-different` | 一樣不一樣 | 桃園市兒童美術館 | 2026/07/04～2026/11/30 | 非池中藝術網、桃美館官網當期展覽頁 |
+
+圖片網址查不到可靠來源，`imageUrl` 留空（前端顯示佔位圖），不猜。
+
+**每月查證**：排程每月 1 日台灣時間早上開一個新 session，照 `docs/monthly-museum-check.md`：
+
+1. 桃美館：移除已結束的、更新 `lastVerified`、新增新的展覽（只用 WebSearch，不寫腳本、不用 `probe.yml` 抓桃美館）。
+2. 中美館：把 `tcam-raw.json` 跟 WebSearch 查到的中美館展覽比對，有完整展期但沒抓到的補進 `tcam-overrides.json`、在 PR 裡標明「中美館漏抓」；沒有完整展期的長期展示（庫房裡的光、角落任務）不加。
+3. 跑 build 確認沒有警告，開 PR `chore: 每月美術館查證 YYYY-MM`。只改兩個 override 檔，不 commit `events.json`／raw 檔；需要改程式或 `sources.json` 的情況寫在 PR 裡讓使用者決定。
+4. 原則：不編造資料、每筆都附來源；只有非官方來源時至少兩個來源一致；來源矛盾或資訊不完整的不加，列在 PR 的「無法確認的項目」。
+
+**實測結果**（2026/10/26，本機用 main 上的 raw 檔跑 build）：桃美館 2 筆，地點分別對到桃園市大園區、桃園市中壢區；跟其他來源沒有重疊。`events.json` 384 → 386 筆。override 的三種情況（格式不對、已經被自動抓到、正常新增）都測過。

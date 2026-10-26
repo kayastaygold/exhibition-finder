@@ -9,10 +9,11 @@ name: Update events.json
 #
 # 流程：fetch-sources.mjs 依 data/sources.json 抓每個 enabled 的來源（目前是文化部、
 # 文化快遞、新北市美術館、國美館與中美館官網；北美館 data.taipei 已停用，見 schema.md 8.6、
-# 第 11 節）的最新資料寫進各自的 raw 檔 → build-events.mjs 把 raw 檔轉成 events.json
-# → 有任何變化才 commit。任一來源抓取失敗時，fetch-sources.mjs 會保留上一次的
-# raw 檔、印出警告，不會讓整個 workflow 失敗；只有 build 合併出 0 筆時才會失敗、
-# 不 commit。見 schema.md 第 9.3 節。
+# 第 11 節；桃美館是人工維護的 override，不抓取，見 11.8）的最新資料寫進各自的
+# raw 檔 → build-events.mjs 把 raw 檔＋override 檔轉成 events.json → 有任何變化才
+# commit。任一來源抓取失敗時，fetch-sources.mjs 會保留上一次的 raw 檔、印出警告，
+# 不會讓整個 workflow 失敗；只有 build 合併出 0 筆時才會失敗、不 commit。
+# 見 schema.md 第 9.3 節。
 #
 # raw 檔也要一起 commit：「抓取失敗就沿用上一次的 raw 檔」的前提是上一次的檔案
 # 在 repo 裡——不 commit 的話，下次 runner checkout 下來的永遠是舊快照。
