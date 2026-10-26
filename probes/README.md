@@ -27,3 +27,4 @@
 | 桃園／台中／高雄的開放資料（臺中活動訊息、高雄文化局展覽、葫蘆墩活動表） | `claude/probe-regional-sources` | #17 |
 | 中美館、國美館、桃美館、新北美術館官網 | `claude/probe-museums-r2` | `schema.md` 11.1 |
 | 新北市美術館＋國美館爬取的實測 | `claude/probe-museum-adapters`、`claude/probe-museums-live` | `schema.md` 11.6 |
+| 中美館詳細頁結構與爬取實測 | `claude/probe-tcam-detail`、`claude/probe-tcam-live` | `schema.md` 11.7 |

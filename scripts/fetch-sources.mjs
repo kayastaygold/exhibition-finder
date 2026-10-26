@@ -25,6 +25,7 @@
 import { readFile, writeFile, rename, appendFile } from "node:fs/promises";
 import { fetchNtcam } from "./scrapers/ntcam.mjs";
 import { fetchNtmofa } from "./scrapers/ntmofa.mjs";
+import { fetchTcam } from "./scrapers/tcam.mjs";
 
 const SOURCES_PATH = process.env.SOURCES_PATH ?? "data/sources.json";
 const TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS ?? 30000);
@@ -123,6 +124,7 @@ const FETCHERS = {
   "data-taipei": fetchDataTaipei,
   ntcam: fetchNtcam,
   ntmofa: fetchNtmofa,
+  tcam: fetchTcam,
 };
 
 async function readPreviousCount(rawPath) {

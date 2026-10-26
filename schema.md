@@ -658,7 +658,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 |---|---|---|---|---|
 | 新北市美術館 | `ntcart.museum` | 沒有公開 API；列表頁前端自己 POST `exhibition.aspx`（`q=get`）取 JSON | 不存在（404） | ✅ 自動抓（11.2） |
 | 國立臺灣美術館 | `www.ntmofa.gov.tw` | 沒有 RSS；data.gov.tw 只有 2015 年的舊資料集 | 不存在（404）；詳細頁所在的 `event.culture.tw` 也不存在 | ✅ 自動抓（11.3） |
-| 臺中市立美術館 | `www.tcam.museum` | WordPress 的 `/wp-json/api` 被 robots.txt **禁止** | 只禁止 `/wp-json/api`、後台、`sw.js` | ⚠️ 從首頁連結抓詳細頁（PR 2，還沒做） |
+| 臺中市立美術館 | `www.tcam.museum` | WordPress 的 `/wp-json/api` 被 robots.txt **禁止** | 只禁止 `/wp-json/api`、後台、`sw.js` | ⚠️ 從首頁找詳細頁、逐一解析（11.7） |
 | 桃園市立美術館 | `tmofa.tycg.gov.tw` | — | 讀不到：所有請求（含 robots.txt）都被 HiNet CDN 的 Anti-DDoS JavaScript 驗證擋下 | ❌ override＋每月查證（PR 3，還沒做）。**不嘗試繞過防護** |
 
 ### 11.2 新北市美術館（`scripts/scrapers/ntcam.mjs`）
@@ -687,7 +687,7 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 
 ### 11.4 轉成事件（`build-events.mjs` 的 `loadMuseumEvents()`）
 
-`sources.json` 裡 `kind: "museum"` 而且 `enabled: true` 的來源，讀各自的 `rawPath`（統一格式：`id`、`title`、`startDate`、`endDate`、`imageUrl`、`url`、`venueText`、`description`），`source` 欄位是來源 id（`ntcam`、`ntmofa`），`showUnit` 是館名，另外多一個 `url` 欄位指向官網詳細頁。`isPermanent`／`isOnline` 照一般規則判斷。
+`sources.json` 裡 `kind: "museum"` 而且 `enabled: true` 的來源，讀各自的 `rawPath`（統一格式：`id`、`title`、`startDate`、`endDate`、`imageUrl`、`url`、`venueText`、`description`），`source` 欄位是來源 id（`ntcam`、`ntmofa`、`tcam`），`showUnit` 是館名，另外多一個 `url` 欄位指向官網詳細頁。`isPermanent`／`isOnline` 照一般規則判斷。
 
 **地點對應**（`resolveMuseumVenue()`，刻意保守——判斷不出來就讓縣市留空，不要把館外展覽錯放到美術館所在的縣市）：
 
@@ -714,3 +714,20 @@ XML:  https://cloud.culture.tw/frontsite/trans/SearchShowAction.do?method=doFind
 - 去重：取代了文化部 2 筆（新北的「大廳計畫」「廊道計畫」）。
 - `events.json` 362 → 378 筆。
 - 國美館有 3 檔線上／數位展覽（迄日 2030-12-31），被判定為常設展，前端預設隱藏；其中 2 檔標題有「線上」，也會被判成線上展覽。
+
+### 11.7 臺中市立美術館（`scripts/scrapers/tcam.mjs`）
+
+展覽列表頁（`/zh/exhibition`）的展覽是瀏覽器端再向 `/wp-json/api` 取的，而 robots.txt 明確禁止這個路徑，所以**不用列表頁、也不碰那個 API**，改成：
+
+1. **從首頁找展覽詳細頁**：首頁 `<a href="/zh/exhibition/<slug>">` 的連結，加上首頁內嵌 Nuxt 資料（`__NUXT_DATA__`，解碼見 `common.mjs` 的 `reviveNuxtData()`）裡 `post_type: "exhibition"` 物件的 `url`。內嵌資料是一份月曆，不完整（只列部分月份的部分展覽），所以不能當主要來源，但能補到首頁沒放連結的展覽——10/26 實測就多找到 2 檔（大肚之盟、熱暑人，都已結束）。
+2. **逐一抓詳細頁**（伺服器端產生，robots.txt 允許），取 `<h1>` 標題、「時間」「地點」兩個標籤欄位（`<span>時間</span>` 之後的第一個 `<p>`）、`class` 含 `hero-clip` 的主圖。事件 uid 是 `tcam-<slug>`（slug 已 decode）。
+
+- **地點**：「臺中市立美術館 展覽室D、E」「綠美圖｜文化之森」都靠 `location.aliases`（中美館、綠美圖…）對到館址臺中市西屯區中科路2201號。
+- **主圖**：只認 `hero-clip` 那張，詳細頁其他 wp-content 圖片（藝術家照、作品圖、其他展覽的 banner）不用；沒有主圖就留空（「無界花園」目前沒有）。
+- **簡介**：詳細頁的 meta description 目前是全站共用的一句話，所有展覽都一樣時就清空，不顯示同一句話。
+- **沒有完整展期的不收**：「時間」欄只寫開始日（「庫房裡的光」：2025.10.28）或沒寫日期（「角落任務」）的長期展示，這次先不收，log 會列出來；要不要收、迄日怎麼處理，等使用者決定。
+- 單一詳細頁抓不到只略過那一檔；首頁一個展覽連結都找不到，整個來源當作失敗。
+
+**限制**：只抓得到首頁（含內嵌資料）有提到的展覽。每月查證時會核對中美館官網的展覽是否都有被抓到，有漏的用 override 補、在 PR 裡註明（使用者 2026/10/26 決定，PR 3 實作）。
+
+**實測結果**（2026/10/26，runner 上用真的官網資料）：首頁 6 個連結＋內嵌資料，共 8 檔；6 檔有完整展期收進來（顯示中 3 檔：真鍋大度、蠍子與青蛙、無界花園；已結束 3 檔：王水河、大肚之盟、熱暑人），2 檔沒有完整展期不收；地點全部對到臺中市西屯區；跟其他來源沒有重疊。`events.json` 378 → 384 筆。
