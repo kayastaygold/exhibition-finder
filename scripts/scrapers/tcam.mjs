@@ -105,6 +105,11 @@ export async function fetchTcam(source, http) {
       description: d.description,
     });
   }
+  // 詳細頁的 meta description 目前是全站共用的一句話（2026/10 實測每檔都一樣、只有 7 個字），
+  // 不是展覽自己的介紹；所有展覽的簡介都相同時就清空，不要每張卡片都顯示同一句話。
+  if (records.length > 1 && records.every((r) => r.description === records[0].description)) {
+    for (const r of records) r.description = "";
+  }
   if (startOnly.length) {
     console.log(`  中美館：${startOnly.length} 檔沒有完整展期，這次不收：${startOnly.join("；")}`);
   }
