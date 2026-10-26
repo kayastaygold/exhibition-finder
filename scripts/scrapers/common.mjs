@@ -86,3 +86,40 @@ export function assertValidMuseumRecords(records, label) {
   });
   return records;
 }
+
+// 只有一個日期（沒有區間）時用：「2025.10.28」「2025/12/13 起」→ "YYYY/MM/DD" 或 null。
+const SINGLE = /(20\d{2})\s*[./-]\s*(\d{1,2})\s*[./-]\s*(\d{1,2})/;
+export function parseSingleDate(text) {
+  const m = SINGLE.exec(text ?? "");
+  if (!m) return null;
+  const [y, mo, d] = m.slice(1).map(Number);
+  return validYmd(y, mo, d) ? `${y}/${pad(mo)}/${pad(d)}` : null;
+}
+
+// Nuxt 3 頁面內嵌的 <script id="__NUXT_DATA__">（devalue 格式的扁平陣列）解碼成一般物件。
+// 物件的值是「指向陣列索引的數字」，另外有 ["Reactive", i]、["Set", ...]、["Map", ...]、
+// ["Date", s] 這類包裝；負數索引是 undefined 等特殊值。只解析資料，不執行任何程式碼。
+export function reviveNuxtData(arr) {
+  const memo = new Map();
+  const WRAP = new Set(["Reactive", "ShallowReactive", "Ref", "ShallowRef", "EmptyRef", "EmptyShallowRef", "NuxtError", "Island"]);
+  const at = (i) => {
+    if (typeof i !== "number") return i;
+    if (i < 0) return undefined;
+    if (memo.has(i)) return memo.get(i);
+    const v = arr[i];
+    let out;
+    if (Array.isArray(v)) {
+      if (typeof v[0] === "string" && WRAP.has(v[0])) { memo.set(i, null); out = at(v[1]); }
+      else if (v[0] === "Date") out = v[1];
+      else if (v[0] === "Set") { out = []; memo.set(i, out); for (const x of v.slice(1)) out.push(at(x)); }
+      else if (v[0] === "Map") { out = {}; memo.set(i, out); for (let k = 1; k < v.length; k += 2) out[String(at(v[k]))] = at(v[k + 1]); }
+      else { out = []; memo.set(i, out); for (const x of v) out.push(at(x)); }
+    } else if (v && typeof v === "object") {
+      out = {}; memo.set(i, out);
+      for (const [k, x] of Object.entries(v)) out[k] = at(x);
+    } else out = v;
+    memo.set(i, out);
+    return out;
+  };
+  return at(0);
+}

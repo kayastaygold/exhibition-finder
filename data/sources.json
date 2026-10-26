@@ -88,5 +88,29 @@
       }
     },
     "requiresReview": false
+  },
+  {
+    "id": "tcam",
+    "name": "臺中市立美術館（官網）",
+    "type": "scrape",
+    "kind": "museum",
+    "url": "https://www.tcam.museum/zh",
+    "rawPath": "data/tcam-raw.json",
+    "responseFormat": "tcam",
+    "enabled": true,
+    "location": {
+      "location": "臺中市西屯區中科路2201號",
+      "locationName": "臺中市立美術館",
+      "latitude": null,
+      "longitude": null,
+      "aliases": [
+        "中美館",
+        "台中市立美術館",
+        "臺中綠美圖",
+        "台中綠美圖",
+        "綠美圖"
+      ]
+    },
+    "requiresReview": false
   }
 ]
