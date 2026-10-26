@@ -650,6 +650,10 @@ function resolveMuseumVenue(venueText, venue) {
   // 先比對館名：「新北市美術館 – 大廳」裡的館名本身就含「新北市」，要先認出是館內
   const names = [venue.locationName, ...(venue.aliases ?? [])];
   if (names.some((n) => n && text.includes(n)) || ROOM_AT_START.test(text)) return atVenue;
+  // 館方常用、但官網沒寫地址的館外地點（sources.json 的 knownVenues：名稱 → 地址）
+  for (const [name, address] of Object.entries(venue.knownVenues ?? {})) {
+    if (text.includes(name)) return { location: address, locationName: text, latitude: null, longitude: null };
+  }
   if (extractCounty(text)) return { location: text, locationName: text, latitude: null, longitude: null };
   return { location: "", locationName: text, latitude: null, longitude: null };
 }
